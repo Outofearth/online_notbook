@@ -50,6 +50,60 @@ Every new account automatically receives two standard starter notes, one in Chin
 | `CredentialVault` Durable Object | Isolated storage for the key used to encrypt backup credentials |
 | WebDAV or S3 storage | User-configured off-site backups |
 
+## Environment variables
+
+The following variables can be set in `wrangler.toml` under `[vars]`, or overridden in the Cloudflare Dashboard under **Settings → Variables and Secrets**. Dashboard values always take precedence over `wrangler.toml`.
+
+| Variable | Type | Required | Default | Purpose |
+| --- | --- | --- | --- | --- |
+| `APP_NAME` | Variable | No | `Inkstone` | Display name shown in the app UI and meta tags |
+| **`ADMINISTRATOR`** | Variable | No | `admin` | Auto-seeded owner account username on first startup (users table empty). Ignored once an owner exists or the database is already initialized. |
+| **`ADMINPASSWORD`** | **Secret** | No | `admin123456` | Auto-seeded owner account password on first startup. **Always override the default in production** — set it as a Secret, not a plain Variable. Uses scrypt (`N=16384, r=8, p=5`) hashing, never stored in plaintext. |
+| `PUBLIC_URL` | Variable | No | *(none)* | Optional public origin used for absolute links in backups and public sharing |
+
+### First-run owner seeding (ADMINISTRATOR + ADMINPASSWORD)
+
+If **both** variables are set **and** the `users` table is empty, the Worker auto-creates one `owner` account with the configured username and password. This happens exactly **once**: after seeding, a marker is written to `app_meta` (`system:admin_seeded = 1`) and subsequent restarts skip the step — even if you later truncate the users table. The seed also skips if the password is weaker than the normal registration rules (`≥ 8 characters`) or if the username is invalid (`3-32 chars, lowercase letters / digits / underscore / hyphen`).
+
+For **production deployments** on Cloudflare:
+1. Go to the Worker → **Settings → Variables and Secrets**.
+2. Add **`ADMINISTRATOR`** as a regular **Variable** with your chosen username.
+3. Add **`ADMINPASSWORD`** as a **Secret** (🔒) with a strong password.
+4. Save. The next deployment (or first boot) will create the account automatically.
+5. Log in immediately and change the password in **Settings → Account → Sign-in Security**.
+
+> **Security note**: `admin123456` is only a fallback default baked into `wrangler.toml`. Never leave it in place on an internet-facing deployment — **always set ADMINPASSWORD as a Secret in the Cloudflare Dashboard** (secrets are never exposed via `wrangler.toml`, build logs, or client-side code).
+
+## Client-side encrypted backup export
+
+In addition to plain JSON and ZIP exports, Inkstone supports **password-encrypted** ZIP backups. The encryption happens entirely in the browser — the Worker never sees the key.
+
+| Property | Detail |
+| --- | --- |
+| Algorithm | AES-256-GCM + PBKDF2-SHA256 (600k iterations, zero npm dependencies) |
+| File format | `.enc` suffix, magic header `INKENC` + version byte + 16 B salt + 12 B IV + ciphertext |
+| Key derivation | PBKDF2 from your password + per-file random salt |
+| Where to enable | **Settings → Data → Export → "Encrypt with password"** |
+| Recovery | Back on the same Data tab, upload the `.enc` file and enter the password — the Worker receives a plain ZIP and runs the standard import flow |
+| Password policy | Must pass the same ≥ 8 characters validation used for login. Weak passwords are rejected on export. |
+| Security guarantees | 1) Keys never leave the browser. 2) A wrong password produces a decryption error, not a partial import. 3) Ciphertext tampering is detected (AES-GCM authentication tag). |
+
+No server-side configuration is required — the feature is built into the client bundle.
+
+## User management (owner-only)
+
+Owners can manage all member accounts from **Settings → Account → Access Control → User Management**.
+
+| Action | How | Guardrails |
+| --- | --- | --- |
+| **List users** | Opens automatically when the panel loads | Only owners see the panel |
+| **Promote → owner** | Click the ⬆ button on a member row | You cannot promote or demote yourself |
+| **Demote → member** | Click the ⬇ button on an owner row | **Last owner cannot be demoted** (the system always keeps at least one owner) |
+| **Delete member** | Click the 🗑️ button → confirm | Cannot delete owners, cannot delete yourself. All notes, folders, tags, attachments, versions, sessions, TOTP, OAuth grants and backups owned by that member are **permanently removed**. |
+| **Open/Close registration** | **Settings → Account → Access Control → Allow Registration** | Owner-only, requires current password. When open, new visitors get a registration link and join as **members** (not owners). |
+
+All changes are protected server-side even if the UI guard is bypassed. The owner identity is determined solely by the `role = 'owner'` column in D1; there is no separate `is_owner` flag.
+
 ## Deployment
 
 1. Fork the Inkstone repository to your GitHub account.
@@ -58,6 +112,7 @@ Every new account automatically receives two standard starter notes, one in Chin
 4. For R2 mode, set the build command to `npm run build` and the deploy command to `npm run deploy`.
    - To use KV mode, change the deploy command to `npm run deploy:kv`.
 5. After deployment completes, open the generated Workers URL.
+6. *(Recommended)* Go to **Settings → Variables and Secrets** and override `ADMINISTRATOR` / `ADMINPASSWORD` as described above before anyone can register.
 
 Existing databases are upgraded automatically through versioned, idempotent migrations. Keep a current backup before updating any self-hosted deployment. When a newer stable Inkstone release is available, the owner receives a focused reminder without interrupting regular members.
 
@@ -77,6 +132,7 @@ Existing databases are upgraded automatically through versioned, idempotent migr
 | `npm run dev` | Start the local Worker and client |
 | `npm run dev:kv` | Start locally with the KV attachment configuration |
 | `npm run dev:demo` | Start the reset-on-refresh browser-only demo |
+| `./scripts/dev-clean.ps1` | **Windows only** — kill port 7712, wipe `.wrangler`, start `npm run dev` with an ephemeral D1. Every run is a fresh empty database — perfect for resetting users or reproducing bugs. |
 | `npm run typecheck` | Run TypeScript project checks |
 | `npm run test:unit` | Run the Vitest unit test suite |
 | `npm run i18n:check` | Verify parity between the English and Chinese locale resources |

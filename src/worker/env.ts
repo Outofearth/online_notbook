@@ -23,6 +23,18 @@ export interface Env {
 
   PUBLIC_URL?: string
 
+  /**
+   * 首次启动时自动创建的 Owner 账号用户名。
+   * 仅在 users 表为空时生效，已存在账号不会被覆盖。
+   */
+  ADMINISTRATOR?: string
+
+  /**
+   * 首次启动时自动创建的 Owner 账号密码。
+   * 仅在 users 表为空时生效，已存在账号不会被覆盖。
+   */
+  ADMINPASSWORD?: string
+
   /** Workers AI binding for semantic search; optional so AI search degrades gracefully. */
   AI?: {
     run: <T = unknown>(model: string, inputs: unknown) => Promise<T>

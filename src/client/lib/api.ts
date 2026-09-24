@@ -1,5 +1,6 @@
 import { CLIENT_HEADER } from '@shared/constants'
 import type { MarkdownBackupManifest } from '@shared/backup-format'
+import { encryptBackupBlob } from '@shared/encrypted-backup'
 import type {
   AppLocale,
   Attachment,
@@ -208,7 +209,12 @@ async function fetchDownload(path: string, fallbackName: string): Promise<{ resp
   return { response, filename }
 }
 
-async function saveDownload(format: 'json' | 'zip'): Promise<void> {
+async function saveDownload(format: 'json' | 'zip', password?: string): Promise<void> {
+  const encPassword = password ?? ''
+  const hasEncryption = encPassword.length > 0
+  const nowStamp = new Date().toISOString().replace(/[-:TZ]/g, '').slice(0, 15)
+  const encExt = hasEncryption ? 'enc' : (format === 'zip' ? 'zip' : 'json')
+
   if (format === 'zip') {
     const picker = (window as Window & {
       showSaveFilePicker?: (options: {
@@ -220,8 +226,10 @@ async function saveDownload(format: 'json' | 'zip'): Promise<void> {
       let handle: FileSystemFileHandle
       try {
         handle = await picker.call(window, {
-          suggestedName: `inkstone-backup-${new Date().toISOString().replace(/[-:TZ]/g, '').slice(0, 15)}.zip`,
-          types: [{ description: 'ZIP archive', accept: { 'application/zip': ['.zip'] } }],
+          suggestedName: `inkstone-backup-${nowStamp}.${encExt}`,
+          types: hasEncryption
+            ? [{ description: 'Encrypted backup', accept: { 'application/octet-stream': ['.enc'] } }]
+            : [{ description: 'ZIP archive', accept: { 'application/zip': ['.zip'] } }],
         })
       } catch (error) {
         if ((error as Error)?.name === 'AbortError') return
@@ -229,22 +237,27 @@ async function saveDownload(format: 'json' | 'zip'): Promise<void> {
       }
       const { response } = await fetchDownload('/api/export?format=zip', 'inkstone-backup.zip')
       if (!response.body) throw new ApiError(0, 'unknown', t('api.no_network_connection'))
+      let blob = await response.blob()
+      if (hasEncryption) blob = await encryptBackupBlob(encPassword, blob)
       const writable = await handle.createWritable()
-      await response.body.pipeTo(writable)
+      await blob.stream().pipeTo(writable)
       return
     }
 
-    const { response, filename } = await fetchDownload('/api/export?format=zip', 'inkstone-backup.zip')
-    await saveResponseDownload(response, filename)
+    const { response } = await fetchDownload('/api/export?format=zip', 'inkstone-backup.zip')
+    let blob = await response.blob()
+    if (hasEncryption) blob = await encryptBackupBlob(encPassword, blob)
+    await saveResponseBlob(blob, `inkstone-backup-${nowStamp}.${encExt}`)
     return
   }
 
-  const { response, filename } = await fetchDownload('/api/export?format=json', 'inkstone-export.json')
-  await saveResponseDownload(response, filename)
+  const { response } = await fetchDownload('/api/export?format=json', 'inkstone-export.json')
+  let blob = await response.blob()
+  if (hasEncryption) blob = await encryptBackupBlob(encPassword, blob)
+  await saveResponseBlob(blob, `inkstone-export-${nowStamp}.${encExt}`)
 }
 
-async function saveResponseDownload(response: Response, filename: string): Promise<void> {
-  const blob = await response.blob()
+async function saveResponseBlob(blob: Blob, filename: string): Promise<void> {
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
@@ -442,6 +455,30 @@ export const api = {
         return settings
       }),
     stats: () => request<Record<string, number>>('/api/settings/stats'),
+  },
+
+  admin: {
+    users: {
+      list: () => request<{
+        users: Array<{
+          id: string
+          username: string
+          login: string
+          name: string
+          avatarUrl: string
+          role: 'owner' | 'member'
+          createdAt: number
+          lastSeenAt: number
+        }>
+      }>('/api/admin/users'),
+      remove: (userId: string) =>
+        request<{ ok: true }>(`/api/admin/users/${userId}`, { method: 'DELETE' }),
+      setRole: (userId: string, role: 'owner' | 'member') =>
+        request<{ ok: true; role: 'owner' | 'member' }>(`/api/admin/users/${userId}/role`, {
+          method: 'PATCH',
+          body: { role },
+        }),
+    },
   },
 
   mcp: {

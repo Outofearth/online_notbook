@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Camera, KeyRound, LogOut, ShieldCheck, UserRound } from 'lucide-react'
+import { Camera, KeyRound, LogOut, RefreshCw, ShieldCheck, Trash2, UserRound } from 'lucide-react'
 import { PROFILE_NAME_MAX_LENGTH } from '@shared/avatar'
 import { LIMITS } from '@shared/constants'
 import { Avatar, Badge, Button } from '../../components/primitives'
@@ -31,11 +31,20 @@ export function AccountSettings() {
       </section>
 
       {user.role === 'owner' && (
-        <section>
-          <h3 className="mb-2 px-1 text-[12px] font-semibold text-[var(--text-secondary)]">
-            {t("common.access_control")}
-          </h3>
-          <RegistrationSection />
+        <section className="space-y-4">
+          <div>
+            <h3 className="mb-2 px-1 text-[12px] font-semibold text-[var(--text-secondary)]">
+              {t("common.access_control")}
+            </h3>
+            <RegistrationSection />
+          </div>
+
+          <div>
+            <h3 className="mb-2 px-1 text-[12px] font-semibold text-[var(--text-secondary)]">
+              {t("settings.user_management")}
+            </h3>
+            <UserManagementSection />
+          </div>
         </section>
       )}
     </div>
@@ -454,3 +463,213 @@ function RegistrationSection() {
     </div>
   )
 }
+
+interface AdminUserRow {
+  id: string
+  username: string
+  login: string
+  name: string
+  avatarUrl: string
+  role: 'owner' | 'member'
+  createdAt: number
+  lastSeenAt: number
+}
+
+/** 管理员用户管理面板 (仅 owner 可见) */
+function UserManagementSection() {
+  const toast = useUi((state) => state.toast)
+  const currentUserId = useSession((state) => state.user?.id ?? '')
+  const [users, setUsers] = useState<AdminUserRow[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [busyId, setBusyId] = useState<string | null>(null)
+
+  const load = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await api.admin.users.list()
+      setUsers(result.users)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void load()
+  }, [])
+
+  const onRemove = async (target: AdminUserRow) => {
+    if (target.id === currentUserId) return
+    const confirmed = await confirm({
+      title: t('settings.user_delete_confirm_title'),
+      description: t('settings.user_delete_confirm_description', { username: target.username }),
+      confirmLabel: t('common.delete'),
+      tone: 'danger',
+    })
+    if (!confirmed) return
+    setBusyId(target.id)
+    try {
+      await api.admin.users.remove(target.id)
+      toast({ title: t('settings.user_deleted'), tone: 'success' })
+      await load()
+    } catch (err) {
+      toast({
+        title: t('settings.user_delete_failed'),
+        description: err instanceof Error ? err.message : String(err),
+        tone: 'danger',
+      })
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const onToggleRole = async (target: AdminUserRow) => {
+    if (target.id === currentUserId) return
+    const newRole: 'owner' | 'member' = target.role === 'owner' ? 'member' : 'owner'
+    const confirmed = await confirm({
+      title: t('settings.user_role_change_title'),
+      description: t(
+        newRole === 'owner'
+          ? 'settings.user_role_promote_description'
+          : 'settings.user_role_demote_description',
+        { username: target.username },
+      ),
+      confirmLabel: t('settings.confirm'),
+    })
+    if (!confirmed) return
+    setBusyId(target.id)
+    try {
+      await api.admin.users.setRole(target.id, newRole)
+      toast({
+        title: t(
+          newRole === 'owner'
+            ? 'settings.user_promoted_to_owner'
+            : 'settings.user_demoted_to_member',
+        ),
+        tone: 'success',
+      })
+      await load()
+    } catch (err) {
+      toast({
+        title: t('settings.user_role_change_failed'),
+        description: err instanceof Error ? err.message : String(err),
+        tone: 'danger',
+      })
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  return (
+    <div className="rounded-[var(--r-lg)] border border-[var(--border-subtle)] bg-[var(--bg-base)]">
+      <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-4 py-2.5">
+        <p className="text-[11.5px] leading-relaxed text-[var(--text-tertiary)]">
+          {t('settings.user_management_description')}
+        </p>
+        <Button
+          size="sm"
+          variant="ghost"
+          icon={<RefreshCw size={12} className={loading ? 'animate-[ink-spin_.7s_linear_infinite]' : ''} />}
+          onClick={() => void load()}
+          disabled={loading}
+          aria-label="刷新"
+        />
+      </div>
+
+      {loading && !users && (
+        <div className="px-4 py-6 text-center text-[12px] text-[var(--text-quaternary)]">
+          {t('common.loading')}
+        </div>
+      )}
+
+      {error && !users && (
+        <div role="alert" className="px-4 py-6 text-center text-[12px] text-[var(--danger)]">
+          {error}
+        </div>
+      )}
+
+      {users && (
+        <ul className="divide-y divide-[var(--border-subtle)]">
+          {users.map((u) => {
+            const isSelf = u.id === currentUserId
+            const isBusy = busyId === u.id
+            const canDelete = u.role !== 'owner' && !isSelf
+            const canToggleRole = !isSelf
+            return (
+              <li key={u.id} className="flex items-center gap-3 px-4 py-2.5">
+                <Avatar
+                  src={u.avatarUrl}
+                  size={30}
+                  name={u.name || u.username}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-[13px] font-medium text-[var(--text-primary)]">
+                      {u.name || u.username}
+                    </span>
+                    {u.role === 'owner' ? (
+                      <Badge tone="accent">{t('settings.role_owner')}</Badge>
+                    ) : (
+                      <Badge tone="neutral">{t('settings.role_member')}</Badge>
+                    )}
+                    {isSelf && (
+                      <Badge tone="success">{t('settings.current_user')}</Badge>
+                    )}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-[var(--text-quaternary)]">
+                    @{u.username}
+                    {u.lastSeenAt ? ` · ${t('settings.user_last_seen_at', { when: formatRelative(u.lastSeenAt) })}` : ''}
+                  </div>
+                </div>
+
+                <div className="flex shrink-0 gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={!canToggleRole || isBusy}
+                    loading={isBusy}
+                    onClick={() => void onToggleRole(u)}
+                    title={canToggleRole
+                      ? (u.role === 'owner' ? t('settings.demote_to_member') : t('settings.promote_to_owner'))
+                      : t('settings.cannot_change_own_role')}
+                  >
+                    {u.role === 'owner' ? t('settings.demote') : t('settings.promote')}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={<Trash2 size={12} className="text-[var(--danger)]" />}
+                    disabled={!canDelete || isBusy}
+                    loading={isBusy}
+                    onClick={() => void onRemove(u)}
+                    title={canDelete ? t('settings.delete_user') : t('settings.owner_cannot_be_deleted')}
+                    className={canDelete ? 'text-[var(--danger)] hover:text-[var(--danger)]' : ''}
+                  />
+                </div>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+/** 相对时间描述 (X 分钟前 / 昨天 / 日期) */
+function formatRelative(timestamp: number): string {
+  const now = Date.now()
+  const diffMs = Math.max(0, now - timestamp)
+  const sec = Math.floor(diffMs / 1000)
+  if (sec < 60) return t('settings.just_now')
+  const min = Math.floor(sec / 60)
+  if (min < 60) return t('settings.minutes_ago', { n: min })
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return t('settings.hours_ago', { n: hr })
+  const day = Math.floor(hr / 24)
+  if (day < 7) return t('settings.days_ago', { n: day })
+  return new Date(timestamp).toLocaleDateString()
+}
+

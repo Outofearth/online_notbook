@@ -1,6 +1,8 @@
 /** Defines the idempotent final D1 schema initialized by every Worker isolate. */
 import type { DatabaseState, Env } from '../env'
 import { getMeta, setMeta } from './metadata'
+import { hashPassword, normalizeUsername, validateNewPassword } from '../lib/password'
+import { newId } from '../lib/id'
 
 
 export const SCHEMA_STATEMENTS: readonly string[] = [
@@ -650,10 +652,18 @@ export function initializeDatabase(env: Env): Promise<DatabaseState> {
   const existing = initializationCache.get(env.DB)
   if (existing) return existing
 
-  const pending = createSchema(env.DB).catch((error) => {
-    initializationCache.delete(env.DB)
-    throw error
-  })
+  const pending = createSchema(env.DB)
+    .then(async (state) => {
+      await seedConfiguredAdmin(env).catch((error) => {
+        console.warn('[inkstone] Failed to seed configured admin account; manual registration still works:',
+          error instanceof Error ? error.message : error)
+      })
+      return state
+    })
+    .catch((error) => {
+      initializationCache.delete(env.DB)
+      throw error
+    })
   initializationCache.set(env.DB, pending)
   return pending
 }
@@ -753,6 +763,55 @@ async function readStoredDatabaseState(db: D1Database): Promise<DatabaseState | 
   } catch {
     return null
   }
+}
+
+
+/** meta key 用于标记已通过环境变量 seed 过管理员，避免每次启动都尝试。 */
+const ADMIN_SEEDED_KEY = 'system:admin_seeded'
+
+/**
+ * 首次启动时，如果环境变量 ADMINISTRATOR / ADMINPASSWORD 存在，且 users 表为空，
+ * 自动创建一个 Owner 账号。失败只 warn 不中断 Worker 启动。
+ */
+async function seedConfiguredAdmin(env: Env): Promise<void> {
+  const rawUsername = env.ADMINISTRATOR?.trim()
+  const rawPassword = env.ADMINPASSWORD
+
+  // 两个变量必须同时配置才走 seed
+  if (!rawUsername || !rawPassword) return
+
+  const username = normalizeUsername(rawUsername)
+
+  // 幂等标记：已 seed 过则跳过（不管 users 表后来有没有被手动清空）
+  if (await getMeta(env.DB, ADMIN_SEEDED_KEY) === '1') return
+
+  // users 表必须为空才 seed（尊重用户可能已有其他账号的场景）
+  const countRow = await env.DB.prepare(`SELECT 1 AS n FROM users LIMIT 1`).first<{ n: number }>()
+  if (countRow?.n) return
+
+  // 基本安全校验
+  const passwordError = validateNewPassword(rawPassword)
+  if (passwordError) {
+    console.warn(`[inkstone] skip admin seed (ADMINPASSWORD too weak): ${passwordError}`)
+    return
+  }
+  if (!username || username.length < 3 || username.length > 32) {
+    console.warn(`[inkstone] skip admin seed (ADMINISTRATOR "${rawUsername}" is invalid)`)
+    return
+  }
+
+  const id = newId()
+  const now = Date.now()
+  const passwordHash = await hashPassword(rawPassword)
+
+  await env.DB.prepare(
+    `INSERT INTO users
+       (id, username, password_hash, login, name, avatar_url, role, settings, created_at, last_seen_at)
+     VALUES (?1, ?2, ?3, ?2, ?2, '', 'owner', '{}', ?4, ?4)`,
+  ).bind(id, username, passwordHash, now).run()
+
+  await setMeta(env.DB, ADMIN_SEEDED_KEY, '1')
+  console.info(`[inkstone] Auto-seeded owner account "${username}" from environment variables.`)
 }
 
 function schemaFingerprint(): string {
