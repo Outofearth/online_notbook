@@ -770,8 +770,9 @@ async function readStoredDatabaseState(db: D1Database): Promise<DatabaseState | 
 const ADMIN_SEEDED_KEY = 'system:admin_seeded'
 
 /**
- * On first launch, if env vars ADMINISTRATOR / ADMINPASSWORD are set and the users table is empty,
- * auto-create an Owner account. Failure only warns and does not block Worker startup.
+ * On first launch, if env vars ADMINISTRATOR / ADMINPASSWORD are set and no account
+ * with that username exists yet, auto-create an Owner account. Failure only warns and
+ * does not block Worker startup.
  */
 async function seedConfiguredAdmin(env: Env): Promise<void> {
   const rawUsername = env.ADMINISTRATOR?.trim()

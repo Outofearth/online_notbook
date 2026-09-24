@@ -59,9 +59,15 @@ crons = ["0 * * * *", "15,45 * * * *"]
 
 [vars]
 APP_NAME = "Inkstone"
-# NOTE: ADMINISTRATOR / ADMINPASSWORD MUST be set as encrypted Secrets,
-# never as plain-text vars. Use `npx wrangler secret put <name>` or the
-# Cloudflare Dashboard → Workers → inkstone → Settings → Secrets.
+# Owner account seeded on first boot — see src/worker/db/schema.ts → seedConfiguredAdmin.
+# The username is not sensitive, so it belongs here as a plain variable rather than a
+# Secret. A config-based deploy replaces the Worker's plain variables wholesale, so a
+# Dashboard-only plain variable would silently disappear on the next deploy; keeping it
+# in this file makes it survive.
+ADMINISTRATOR = "admin"
+# NOTE: ADMINPASSWORD MUST be set as an encrypted Secret, never as a plain-text var.
+# Use `npx wrangler secret put ADMINPASSWORD` or the Cloudflare Dashboard →
+# Workers → zhink → Settings → Variables and Secrets → Secrets.
 
 [observability]
 enabled = true
