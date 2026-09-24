@@ -482,9 +482,16 @@ export const api = {
   },
 
   ai: {
-    /** Summarize a single AI note — returns a 3–5 sentence summary text */
+    /** Summarize a single note — returns a 3–5 sentence summary text */
     summarize: (noteId: string) =>
       request<{ summary: string }>(`/api/ai/summarize/${noteId}`, { method: 'POST', timeoutMs: 60_000 }),
+    /** Generate a Mermaid diagram from the note content (or an optional description override) */
+    diagram: (noteId: string, description?: string) =>
+      request<{ mermaid: string }>(`/api/ai/diagram/${noteId}`, {
+        method: 'POST',
+        body: description ? { description } : {},
+        timeoutMs: 60_000,
+      }),
   },
 
   import: {

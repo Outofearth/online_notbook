@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { EditorView } from '@codemirror/view';
-import { ArrowLeft, Columns2, Download, Eye, FileCode, FileDown, FileText, FolderClosed, Hash, History, Link as LinkIcon, ListTree, MoreHorizontal, PanelRightClose, Pencil, Plus, Share2, Sparkles, Star, X, } from 'lucide-react';
+import { ArrowLeft, Columns2, Download, Eye, FileCode, FileDown, FileText, FolderClosed, Hash, History, Link as LinkIcon, ListTree, MoreHorizontal, PanelRightClose, Pencil, Plus, Share2, Sparkles, Star, Wand2, X, } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { api } from '../../lib/api';
 import { readingMinutes } from '@shared/markdown-utils';
@@ -264,6 +264,30 @@ export function Workspace({ onMobileBack, pane = 'active', grouped = false, }: {
         }
     };
 
+    /** AI diagram generation — Worker → Mermaid code → insert at cursor position in editor */
+    const generateDiagram = async (noteId: string) => {
+        if (!view) return;
+        try {
+            const result = await api.ai.diagram(noteId);
+            const code = result.mermaid.trim();
+            const fence = `\n\n\`\`\`mermaid\n${code}\n\`\`\`\n`;
+            const { from } = view.state.selection.main;
+            view.dispatch({
+                changes: { from, insert: fence },
+                selection: { anchor: from + fence.length },
+                scrollIntoView: true,
+            });
+            toast({ title: t("workspace.ai_diagram_ready"), tone: 'default' });
+        }
+        catch (err) {
+            toast({
+                title: t("workspace.ai_diagram_failed"),
+                description: err instanceof Error ? err.message : String(err),
+                tone: 'danger',
+            });
+        }
+    };
+
     const exportMenuItems: MenuItem[] = [
         { id: 'md', label: t("workspace.export_markdown"), icon: <FileText size={13}/>, onSelect: () => void exportNote('md') },
         { id: 'html', label: t("workspace.export_html"), icon: <FileCode size={13}/>, onSelect: () => void exportNote('html') },
@@ -406,6 +430,15 @@ export function Workspace({ onMobileBack, pane = 'active', grouped = false, }: {
               onClick={() => void summarizeCurrentNote(note.id)}
             >
               <Sparkles size={14}/>
+            </IconButton>
+          </Tooltip>
+          <Tooltip label={t("workspace.ai_diagram")}>
+            <IconButton
+              label={t("workspace.ai_diagram")}
+              size="sm"
+              onClick={() => void generateDiagram(note.id)}
+            >
+              <Wand2 size={14}/>
             </IconButton>
           </Tooltip>
           </>)}
