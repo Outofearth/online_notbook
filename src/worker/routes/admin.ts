@@ -3,6 +3,12 @@ import type { AppBindings } from '../env'
 import { ApiError } from '../lib/errors'
 import { JSON_BODY_LIMITS, readJson } from '../lib/request'
 import { requireAuth } from '../middleware/auth'
+import {
+  attachmentCleanupTarget,
+  attachmentObjectKey,
+  type AttachmentObjectStorage,
+  type StoredAttachmentKey,
+} from '../attachments/keys'
 
 /** User management routes (owner access only) */
 export const adminRoutes = new Hono<AppBindings>()
@@ -109,74 +115,96 @@ adminRoutes.delete('/users/:id', async (c) => {
   }
 
   const target = await c.env.DB.prepare(
-    `SELECT id, role FROM users WHERE id = ?1`,
-  ).bind(targetId).first<{ id: string; role: 'owner' | 'member' }>()
+    `SELECT id, username, role FROM users WHERE id = ?1`,
+  ).bind(targetId).first<{ id: string; username: string; role: 'owner' | 'member' }>()
   if (!target) throw ApiError.notFound('User not found')
   if (target.role === 'owner') {
     throw ApiError.badRequest('Owner accounts cannot be deleted')
   }
 
-  await deleteUserAndCascade(c.env.DB, targetId)
+  await deleteUserAndCascade(c.env.DB, targetId, target.username)
 
   return c.json({ ok: true })
 })
 
 /**
- * Deletes a user and all their related data
- * Note: attachment binaries (R2/KV) are cleaned up asynchronously via the attachment_cleanup
- * table; the caller is expected to trigger cleanup regularly.
+ * Deletes a user and all their related data.
+ *
+ * Everything runs in a single `batch()` so the deletion is atomic: a failure
+ * part-way through can no longer leave a half-erased account behind.
+ *
+ * Attachment binaries (R2/KV) are only *queued* in attachment_cleanup; the
+ * scheduled cleanup job purges the actual objects afterwards.
  */
-async function deleteUserAndCascade(db: D1Database, userId: string): Promise<void> {
+async function deleteUserAndCascade(db: D1Database, userId: string, username: string): Promise<void> {
   const now = Date.now()
 
-  // Register attachments in attachment_cleanup (Worker asynchronously purges R2 objects later)
-  await db.prepare(
-    `INSERT OR IGNORE INTO attachment_cleanup (user_id, object_key, created_at)
-     SELECT ?1, object_key, ?2 FROM attachments WHERE user_id = ?1 AND object_key IS NOT NULL`,
-  ).bind(userId, now).run()
+  // attachment_cleanup keys carry a storage prefix plus a MIME-derived file
+  // extension, so they can only be assembled in JS. The attachments table has
+  // no object_key column — reading `object_key` from it fails the whole cascade.
+  const attachments = await db.prepare(
+    `SELECT id, user_id, filename, mime, storage FROM attachments WHERE user_id = ?1`,
+  ).bind(userId).all<StoredAttachmentKey & { storage: AttachmentObjectStorage }>()
 
-  // Delete in dependency order (dependent tables first, then main tables)
-  const statements = [
+  const statement = (sql: string): D1PreparedStatement => db.prepare(sql).bind(userId)
+
+  const statements: D1PreparedStatement[] = [
+    ...attachments.results.map((row) =>
+      db.prepare(
+        `INSERT OR IGNORE INTO attachment_cleanup (object_key, user_id, created_at)
+         VALUES (?1, ?2, ?3)`,
+      ).bind(attachmentCleanupTarget(row.storage, attachmentObjectKey(row)), userId, now),
+    ),
+
+    // Throttle rows are keyed by a string rather than by user id. Some keys end
+    // with the user id, others with the login identity (the username); the
+    // IP-scoped keys are deliberately left alone so they can expire on their own.
+    db.prepare(
+      `DELETE FROM login_attempts
+        WHERE key IN ('login-account:' || ?2, 'pw-work:' || ?1, 'attachment-upload:' || ?1, 'fts-reindex:' || ?1)
+           OR key LIKE 'login:%:' || ?2
+           OR key LIKE 'login-work:%:' || ?2
+           OR key LIKE 'backup-%:' || ?1`,
+    ).bind(userId, username),
+
     // --- Fully independent / light tables ---
-    `DELETE FROM login_attempts WHERE user_id = ?1`,
-    `DELETE FROM totp_login_challenges WHERE user_id = ?1`,
-    `DELETE FROM totp_recovery_codes WHERE user_id = ?1`,
-    `DELETE FROM totp_credentials WHERE user_id = ?1`,
-    `DELETE FROM mcp_api_keys WHERE user_id = ?1`,
-    `DELETE FROM mcp_preferences WHERE user_id = ?1`,
-    `DELETE FROM mcp_operations WHERE user_id = ?1`,
-    `DELETE FROM sessions WHERE user_id = ?1`,
-    `DELETE FROM changes WHERE user_id = ?1`,
-    `DELETE FROM share_asset_sessions WHERE share_id IN (SELECT id FROM shares WHERE user_id = ?1)`,
-    `DELETE FROM shares WHERE user_id = ?1`,
+    statement(`DELETE FROM totp_login_challenges WHERE user_id = ?1`),
+    statement(`DELETE FROM totp_recovery_codes WHERE user_id = ?1`),
+    statement(`DELETE FROM totp_credentials WHERE user_id = ?1`),
+    statement(`DELETE FROM mcp_api_keys WHERE user_id = ?1`),
+    statement(`DELETE FROM mcp_preferences WHERE user_id = ?1`),
+    statement(`DELETE FROM mcp_operations WHERE user_id = ?1`),
+    statement(`DELETE FROM sessions WHERE user_id = ?1`),
+    statement(`DELETE FROM changes WHERE user_id = ?1`),
 
-    // --- Tables that depend on notes ---
-    `DELETE FROM note_tags WHERE user_id = ?1`,
-    `DELETE FROM links WHERE user_id = ?1`,
-    `DELETE FROM note_versions WHERE user_id = ?1`,
-    `DELETE FROM ai_note_embeddings WHERE user_id = ?1`,
-    `DELETE FROM ai_index_queue WHERE user_id = ?1`,
-    `DELETE FROM fts_index_queue WHERE user_id = ?1`,
+    // share_asset_sessions is keyed by slug, not by share id; it must be drained
+    // while the user's shares still exist, hence it runs before `shares`.
+    statement(`DELETE FROM share_asset_sessions WHERE slug IN (SELECT slug FROM shares WHERE user_id = ?1)`),
+    statement(`DELETE FROM shares WHERE user_id = ?1`),
+
+    // note_tags has no user_id column — it is scoped through its notes.
+    statement(`DELETE FROM note_tags WHERE note_id IN (SELECT id FROM notes WHERE user_id = ?1)`),
+    statement(`DELETE FROM links WHERE user_id = ?1`),
+    statement(`DELETE FROM note_versions WHERE user_id = ?1`),
+    statement(`DELETE FROM ai_note_embeddings WHERE user_id = ?1`),
+    statement(`DELETE FROM ai_index_queue WHERE user_id = ?1`),
+    statement(`DELETE FROM fts_index_queue WHERE user_id = ?1`),
 
     // --- Main data ---
-    `DELETE FROM note_tags WHERE note_id IN (SELECT id FROM notes WHERE user_id = ?1)`,
-    `DELETE FROM notes WHERE user_id = ?1`,
-    `DELETE FROM folders WHERE user_id = ?1`,
-    `DELETE FROM tags WHERE user_id = ?1`,
+    statement(`DELETE FROM notes WHERE user_id = ?1`),
+    statement(`DELETE FROM folders WHERE user_id = ?1`),
+    statement(`DELETE FROM tags WHERE user_id = ?1`),
 
     // --- Attachments & backups ---
-    `DELETE FROM attachments WHERE user_id = ?1`,
-    `DELETE FROM backup_runs WHERE user_id = ?1`,
-    `DELETE FROM backup_targets WHERE user_id = ?1`,
-    `DELETE FROM import_mappings WHERE user_id = ?1`,
-    `DELETE FROM attachment_cleanup WHERE user_id = ?1`,
+    statement(`DELETE FROM attachments WHERE user_id = ?1`),
+    statement(`DELETE FROM backup_runs WHERE user_id = ?1`),
+    statement(`DELETE FROM backup_targets WHERE user_id = ?1`),
+    statement(`DELETE FROM import_mappings WHERE user_id = ?1`),
+    statement(`DELETE FROM attachment_cleanup WHERE user_id = ?1`),
 
     // --- Finally remove the user itself ---
-    `DELETE FROM users WHERE id = ?1`,
+    statement(`DELETE FROM users WHERE id = ?1`),
   ]
 
-  // A single .run() is enough for D1, but execute one by one to make debugging easier
-  for (const sql of statements) {
-    await db.prepare(sql).bind(userId).run()
-  }
+  await db.batch(statements)
 }
