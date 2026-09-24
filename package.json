@@ -57,6 +57,7 @@
     "client-zip": "2.5.0",
     "clsx": "^2.1.1",
     "dompurify": "^3.4.13",
+    "epubjs": "^0.3.93",
     "hono": "4.12.34",
     "idb-keyval": "^6.3.0",
     "katex": "^0.18.1",
