@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { EditorView } from '@codemirror/view';
-import { ArrowLeft, Columns2, Download, Eye, FileCode, FileDown, FileText, FolderClosed, Hash, History, Link as LinkIcon, ListTree, MoreHorizontal, PanelRightClose, Pencil, Plus, Share2, Sparkles, Star, Wand2, X, } from 'lucide-react';
+import { ArrowLeft, Brain, Columns2, Download, Eye, FileCode, FileDown, FileText, FolderClosed, Hash, History, Link as LinkIcon, ListTree, MoreHorizontal, PanelRightClose, Pencil, Plus, Share2, Sparkles, Star, Wand2, X, } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { api } from '../../lib/api';
 import { readingMinutes } from '@shared/markdown-utils';
@@ -10,7 +10,7 @@ import { fullTime } from '../../lib/time';
 import { useBreakpoint, useRelativeTime } from '../../lib/hooks';
 import { prettyCombo } from '../../lib/hotkeys';
 import { Button, IconButton } from '../../components/primitives';
-import { Drawer, Menu, Tooltip, type MenuItem } from '../../components/overlay';
+import { Drawer, Menu, Modal, Tooltip, type MenuItem } from '../../components/overlay';
 import { Segmented } from '../../components/form';
 import { EditorSkeleton, Empty } from '../../components/feedback';
 import { DeferredCodeEditor } from '../../editor/CodeEditor';
@@ -74,6 +74,12 @@ export function Workspace({ onMobileBack, pane = 'active', grouped = false, }: {
     const [headings, setHeadings] = useState<Heading[]>([]);
     const [moreMenuOpen, setMoreMenuOpen] = useState(false);
     const [exportMenuOpen, setExportMenuOpen] = useState(false);
+    const [chatOpen, setChatOpen] = useState(false);
+    const [chatQuestion, setChatQuestion] = useState('');
+    const [chatLoading, setChatLoading] = useState(false);
+    const [chatAnswer, setChatAnswer] = useState<string | null>(null);
+    const [chatSources, setChatSources] = useState<Array<{ id: string; title: string }> | null>(null);
+    const [chatError, setChatError] = useState<string | null>(null);
     const [mobileOutlineOpen, setMobileOutlineOpen] = useState(false);
     const [containerWidth, setContainerWidth] = useState(0);
     const isMobile = breakpoint === 'mobile';
@@ -288,6 +294,20 @@ export function Workspace({ onMobileBack, pane = 'active', grouped = false, }: {
         }
     };
 
+    /** RAG chat — asks the Worker to answer a question against this user's notes */
+    const runChat = async () => {
+        const q = chatQuestion.trim();
+        if (q.length < 3) return;
+        setChatLoading(true); setChatAnswer(null); setChatSources(null); setChatError(null);
+        try {
+            const result = await api.ai.chat(q);
+            setChatAnswer(result.answer);
+            setChatSources(result.sources);
+        } catch (err) {
+            setChatError(err instanceof Error ? err.message : String(err));
+        } finally { setChatLoading(false); }
+    };
+
     const exportMenuItems: MenuItem[] = [
         { id: 'md', label: t("workspace.export_markdown"), icon: <FileText size={13}/>, onSelect: () => void exportNote('md') },
         { id: 'html', label: t("workspace.export_html"), icon: <FileCode size={13}/>, onSelect: () => void exportNote('html') },
@@ -441,6 +461,15 @@ export function Workspace({ onMobileBack, pane = 'active', grouped = false, }: {
               <Wand2 size={14}/>
             </IconButton>
           </Tooltip>
+          <Tooltip label={t("workspace.ai_chat")}>
+            <IconButton
+              label={t("workspace.ai_chat")}
+              size="sm"
+              onClick={() => setChatOpen(true)}
+            >
+              <Brain size={14}/>
+            </IconButton>
+          </Tooltip>
           </>)}
           {!isMobile && <><Tooltip label={note.isStarred ? t("common.remove_from_favorites") : t("navigation.favorites")} combo="mod+d">
             <IconButton label={note.isStarred ? t("common.remove_from_favorites") : t("navigation.favorites")} size="sm" active={note.isStarred} onClick={() => void patchNote(note.id, { isStarred: !note.isStarred })}>
@@ -510,6 +539,35 @@ export function Workspace({ onMobileBack, pane = 'active', grouped = false, }: {
                 setMobileOutlineOpen(false);
             }}/>
         </Drawer>)}
+
+      <Modal open={chatOpen} onClose={() => setChatOpen(false)} title={t("workspace.ai_chat")} description={t("workspace.ai_chat_desc")} width={560} footer={<Button variant="primary" onClick={() => void runChat()} disabled={chatLoading || chatQuestion.trim().length < 3}>{chatLoading ? t("common.loading") : t("workspace.ai_chat_send")}</Button>}>
+        <textarea
+          value={chatQuestion}
+          onChange={(e) => setChatQuestion(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void runChat(); } }}
+          rows={3}
+          disabled={chatLoading}
+          placeholder={t("workspace.ai_chat_placeholder")}
+          className="w-full resize-none rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none disabled:opacity-50"
+          autoFocus
+        />
+        {(chatAnswer || chatError) && (
+          <div className="mt-3 max-h-64 overflow-y-auto rounded-md border border-[var(--border)] bg-[var(--bg-sunken)] p-3 text-sm">
+            {chatError && <p className="text-[var(--danger)]">{chatError}</p>}
+            {chatAnswer && <p className="whitespace-pre-wrap leading-relaxed">{chatAnswer}</p>}
+            {chatSources && chatSources.length > 0 && (
+              <div className="mt-3 border-t border-[var(--border-subtle)] pt-2 text-xs text-[var(--text-tertiary)]">
+                <p className="mb-1 font-medium">{t("workspace.ai_chat_sources")}:</p>
+                <ul className="list-disc space-y-0.5 pl-4">
+                  {chatSources.map((src) => (
+                    <li key={src.id}>{src.title}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
 
       <footer className="flex h-[var(--statusbar-h)] shrink-0 items-center gap-2 overflow-hidden border-t border-[var(--border-subtle)] px-3 text-[11px] text-[var(--text-quaternary)]">
         <span className="tabular">{note.wordCount}{t("common.words")}</span>

@@ -492,6 +492,18 @@ export const api = {
         body: description ? { description } : {},
         timeoutMs: 60_000,
       }),
+    /** RAG chat — asks a question against the user's personal notes, returns answer + source citations */
+    chat: (question: string) =>
+      request<{
+        answer: string
+        sources: Array<{ id: string; title: string }>
+        semanticEnabled: boolean
+        totalContextNotes: number
+      }>('/api/ai/chat', {
+        method: 'POST',
+        body: { question },
+        timeoutMs: 90_000,
+      }),
   },
 
   import: {
