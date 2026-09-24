@@ -314,7 +314,12 @@ export function Workspace({ onMobileBack, pane = 'active', grouped = false, }: {
         { id: 'pdf', label: t("workspace.export_pdf"), icon: <FileDown size={13}/>, onSelect: () => void exportNote('pdf') },
     ];
     const mobileItems: MenuItem[] = [
+        // AI actions sit inline in the desktop toolbar; mirror them here so the compact
+        // layout can still reach summarise, diagram and RAG chat without a wide viewport.
         ...(isMobile ? [
+            { id: 'ai-summarize', label: t("workspace.ai_summarize"), icon: <Sparkles size={13}/>, onSelect: () => void summarizeCurrentNote(note.id) },
+            { id: 'ai-diagram', label: t("workspace.ai_diagram"), icon: <Wand2 size={13}/>, onSelect: () => void generateDiagram(note.id) },
+            { id: 'ai-chat', label: t("workspace.ai_chat"), icon: <Brain size={13}/>, onSelect: () => setChatOpen(true) },
             { id: 'star', label: note.isStarred ? t("common.remove_from_favorites") : t("navigation.favorites"), checked: note.isStarred, onSelect: () => void patchNote(note.id, { isStarred: !note.isStarred }) },
             { id: 'backlinks', label: t("common.backlinks"), checked: backlinksOpen, onSelect: toggleBacklinks },
         ] : []),

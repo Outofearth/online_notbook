@@ -133,11 +133,24 @@ export function Sidebar({ collapsed = false, onCollapse, }: {
             {t("common.product_name")}
           </span>
         </div>
-        {onCollapse && (<Tooltip label={t("sidebar.collapse_navigation")}>
-            <IconButton label={t("sidebar.collapse_navigation")} size="sm" onClick={onCollapse}>
-              <PanelLeftClose size={15}/>
+        <div className="flex shrink-0 items-center gap-0.5">
+          {/* Import entry points must also exist in the expanded sidebar; previously they only lived in SidebarRail, so a docked sidebar had no way to import. */}
+          <Tooltip label={t("sidebar.import_files")}>
+            <IconButton label={t("sidebar.import_files")} size="sm" onClick={() => openFileImport(null)}>
+              <FileUp size={15}/>
             </IconButton>
-          </Tooltip>)}
+          </Tooltip>
+          <Tooltip label={t("sidebar.import_url")}>
+            <IconButton label={t("sidebar.import_url")} size="sm" onClick={() => void openUrlImport(null)}>
+              <Globe size={15}/>
+            </IconButton>
+          </Tooltip>
+          {onCollapse && (<Tooltip label={t("sidebar.collapse_navigation")}>
+              <IconButton label={t("sidebar.collapse_navigation")} size="sm" onClick={onCollapse}>
+                <PanelLeftClose size={15}/>
+              </IconButton>
+            </Tooltip>)}
+        </div>
       </header>
 
       <div className="shrink-0 px-2 pt-2"><SearchButton /></div>
