@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ArrowDown, ArrowUp, ChevronRight, Clock, CornerUpLeft, FilePlus2, FileText, FileUp, FolderClosed, FolderInput, FolderOpen, FolderPlus, Hash, Inbox, LogOut, Moon, MoreHorizontal, Palette, PanelLeft, PanelLeftClose, Pencil, Plus, Settings, Star, Sun, Trash2, Waypoints, } from 'lucide-react';
+import { Archive, ArrowDown, ArrowUp, ChevronRight, Clock, CornerUpLeft, FilePlus2, FileText, FileUp, FolderClosed, FolderInput, FolderOpen, FolderPlus, Globe, Hash, Inbox, LogOut, Moon, MoreHorizontal, Palette, PanelLeft, PanelLeftClose, Pencil, Plus, Settings, Star, Sun, Trash2, Waypoints, } from 'lucide-react';
 import { LIMITS } from '@shared/constants';
 import type { Tag, ViewKind } from '@shared/types';
 import { compareTagNames } from '@shared/markdown-utils';
 import { cn } from '../../lib/cn';
 import { Avatar, IconButton, Logo, SectionLabel } from '../../components/primitives';
 import { Menu, Tooltip, confirm, useContextMenu, type MenuItem } from '../../components/overlay';
-import { importFileList, SUPPORTED_EXT, type ImportFileResult } from '../../lib/import-files';
+import { importFileList, SUPPORTED_EXT, convertUrlToNoteDraft, type ImportFileResult } from '../../lib/import-files';
+import { api } from '../../lib/api';
 import { openFileImport, registerImportTrigger } from '../../lib/sidebar-file-import';
 import { switchThemeWithTransition, useUi } from '../../store/ui';
 import { useSession } from '../../store/session';
@@ -18,6 +19,28 @@ import { TagAppearance } from '../tags/TagAppearance';
 import { createTag, deleteTag, renameTag, setTagColor } from '../tags/tagMutations';
 import { t } from "../../lib/i18n";
 import { SearchButton } from '../shell/SearchButton';
+
+// ---------------------------------------------------------------------------
+// URL-based web import — module-level function (callable from SidebarRail, FolderRow, etc.)
+// ---------------------------------------------------------------------------
+
+/** Prompts user for a web URL → Worker fetch → Readability + turndown → creates a note */
+export async function openUrlImport(folderId: string | null): Promise<void> {
+    const url = prompt(t('sidebar.import_url_prompt'));
+    if (!url) return;
+    try {
+        const draft = await convertUrlToNoteDraft(url.trim(), folderId);
+        await api.notes.create({ title: draft.title, content: draft.content, folderId: draft.folderId });
+        useUi.getState().toast({ title: t('sidebar.import_url_ok', { title: draft.title }), tone: 'default' });
+    } catch (err) {
+        useUi.getState().toast({
+            title: t('sidebar.import_url_failed'),
+            description: err instanceof Error ? err.message : String(err),
+            tone: 'danger',
+        });
+    }
+}
+
 export function Sidebar({ collapsed = false, onCollapse, }: {
     collapsed?: boolean;
     onCollapse?: () => void;
@@ -164,6 +187,7 @@ function SidebarRail({ onExpand }: {
         <div className="my-1 h-px w-6 bg-[var(--border-subtle)]"/>
         <RailButton label={t("common.new_note")} combo="mod+n" accent icon={<FilePlus2 size={16}/>} onClick={() => void createContextualNote()}/>
         <RailButton label={t("sidebar.import_files")} icon={<FileUp size={16}/>} onClick={() => openFileImport(null)}/>
+        <RailButton label={t("sidebar.import_url")} icon={<Globe size={16}/>} onClick={() => void openUrlImport(null)}/>
       </div>
 
       <span className="flex-1"/>
@@ -556,6 +580,7 @@ function FolderRow({ node, siblings, index, parentNode, parentSiblings, onCreate
         { id: 'rename', label: t("sidebar.rename"), onSelect: () => onStartRename(node.id) },
         { id: 'new-note', label: t("sidebar.create_new_note_here"), icon: <FilePlus2 size={13}/>, onSelect: () => void useNotes.getState().createNote({ folderId: node.id }) },
         { id: 'import-here', label: t("sidebar.import_files_here"), icon: <FileUp size={13}/>, onSelect: () => openFileImport(node.id) },
+        { id: 'import-url-here', label: t("sidebar.import_url_here"), icon: <Globe size={13}/>, onSelect: () => void openUrlImport(node.id) },
         { id: 'new-child', label: t("sidebar.new_subfolder"), icon: <FolderPlus size={13}/>, disabled: !canCreateChild, onSelect: () => onCreateChild(node.id) },
         { id: 'appearance', label: t("folders.appearance"), icon: <Palette size={13}/>, onSelect: () => onEditAppearance(node.id) },
         { id: 'move-to', label: t("folders.move_to"), icon: <FolderInput size={13}/>, separatorBefore: true, onSelect: () => onChooseParent(node.id) },

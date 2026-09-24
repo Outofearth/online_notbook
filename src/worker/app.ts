@@ -15,6 +15,7 @@ import { backupRoutes } from './routes/backup'
 import { settingsRoutes } from './routes/settings'
 import { adminRoutes } from './routes/admin'
 import { aiRoutes } from './routes/ai'
+import { importRoutes } from './routes/import'
 import { shareManageRoutes, sharePageRoutes, shareRoutes } from './routes/share'
 import { transferRoutes } from './routes/transfer'
 import { updateRoutes } from './routes/update'
@@ -99,6 +100,7 @@ export function createApp() {
   app.route('/api/settings', settingsRoutes)
   app.route('/api/admin', adminRoutes)
   app.route('/api/ai', aiRoutes)
+  app.route('/api/import', importRoutes)
   app.route('/api/update', updateRoutes)
   app.route('/api/mcp', mcpSettingsRoutes)
   app.route('/api/share', shareManageRoutes)

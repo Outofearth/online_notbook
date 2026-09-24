@@ -254,3 +254,81 @@ export interface ImportFileResult {
   /** Total number of files processed in this run */
   total: number
 }
+
+// ---------------------------------------------------------------------------
+// URL-based web import (Worker fetch + frontend Readability + turndown)
+// ---------------------------------------------------------------------------
+
+/** Extracts a human-readable "title candidate" from a URL: domain/path → domain or last path segment */
+function stripUrlToName(url: string): string {
+  try {
+    const parsed = new URL(url)
+    const pathParts = parsed.pathname.split('/').filter(Boolean)
+    const lastPart = pathParts.pop() || parsed.hostname
+    // Strip common page extensions, replace dashes/underscores with spaces
+    const cleaned = lastPart.replace(/\.(html?|aspx|php|jsp)$/i, '').replace(/[-_+]+/g, ' ').trim()
+    return cleaned || parsed.hostname
+  } catch {
+    return url
+  }
+}
+
+/**
+ * Worker-fetched HTML → Readability → Markdown. Readability strips nav/footer/sidebar/ads
+ * so only the article body remains; turndown converts that clean HTML to Markdown.
+ * Dynamic import keeps ~20KB readability.js out of the initial bundle.
+ *
+ * Falls back to the raw body HTML when Readability can't extract anything
+ * (e.g. pages that are all JavaScript, or have no article-like structure).
+ */
+async function convertUrlHtml(
+  html: string,
+): Promise<{ markdown: string; title: string | null }> {
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment — Readability's bundled types are correct
+  const { Readability } = await import('@mozilla/readability')
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  // Readability mutates the DOM — clone to avoid side effects
+  const cloned = doc.cloneNode(true) as Document
+  const article = new Readability(cloned).parse()
+
+  const cleanHtml = article?.content
+    ?? doc.body?.innerHTML
+    ?? html
+
+  const markdown = turndown.turndown(cleanHtml)
+  return { markdown, title: article?.title || null }
+}
+
+/**
+ * Full web-URL import pipeline: Worker fetch → Readability → turndown → deriveTitle → enforceByteLimit.
+ * Returns an ImportedNoteDraft that callers can pass straight to api.notes.create.
+ */
+export async function convertUrlToNoteDraft(
+  url: string,
+  folderId: string | null,
+): Promise<ImportedNoteDraft> {
+  const response = await api.import.url(url)
+  const urlFallback = response.title ?? stripUrlToName(response.finalUrl)
+  const { markdown, title } = await convertUrlHtml(response.html)
+  const pageTitle = title ?? urlFallback
+
+  // Prepend source URL so the note is self-documenting
+  let mdContent = markdown
+  if (response.finalUrl) {
+    mdContent = `Source: ${response.finalUrl}\n\n${mdContent}`
+  }
+
+  let noteTitle = deriveTitle(mdContent, pageTitle)
+  const { text, truncated } = enforceByteLimit(mdContent, LIMITS.contentMaxBytes)
+  if (truncated) {
+    noteTitle = noteTitle + ' (truncated)'
+  }
+
+  return {
+    title: noteTitle,
+    content: text,
+    folderId,
+    sourceName: response.finalUrl,
+    truncated,
+  }
+}

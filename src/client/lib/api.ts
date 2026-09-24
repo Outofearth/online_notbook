@@ -487,6 +487,16 @@ export const api = {
       request<{ summary: string }>(`/api/ai/summarize/${noteId}`, { method: 'POST', timeoutMs: 60_000 }),
   },
 
+  import: {
+    /** Worker-side URL fetch — used by the "import from web URL" feature to bypass browser CORS */
+    url: (url: string) =>
+      request<{ html: string; finalUrl: string; title: string | null }>('/api/import/url', {
+        method: 'POST',
+        body: { url },
+        timeoutMs: 30_000,
+      }),
+  },
+
   mcp: {
     get: () => request<McpSettingsInfo>('/api/mcp'),
     save: (body: {
