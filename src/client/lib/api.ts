@@ -481,6 +481,12 @@ export const api = {
     },
   },
 
+  ai: {
+    /** Summarize a single AI note — returns a 3–5 sentence summary text */
+    summarize: (noteId: string) =>
+      request<{ summary: string }>(`/api/ai/summarize/${noteId}`, { method: 'POST', timeoutMs: 60_000 }),
+  },
+
   mcp: {
     get: () => request<McpSettingsInfo>('/api/mcp'),
     save: (body: {

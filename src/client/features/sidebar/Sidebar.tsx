@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ArrowDown, ArrowUp, ChevronRight, Clock, CornerUpLeft, FilePlus2, FileText, FolderClosed, FolderInput, FolderOpen, FolderPlus, Hash, Inbox, LogOut, Moon, MoreHorizontal, Palette, PanelLeft, PanelLeftClose, Pencil, Plus, Settings, Star, Sun, Trash2, Waypoints, } from 'lucide-react';
+import { Archive, ArrowDown, ArrowUp, ChevronRight, Clock, CornerUpLeft, FilePlus2, FileText, FileUp, FolderClosed, FolderInput, FolderOpen, FolderPlus, Hash, Inbox, LogOut, Moon, MoreHorizontal, Palette, PanelLeft, PanelLeftClose, Pencil, Plus, Settings, Star, Sun, Trash2, Waypoints, } from 'lucide-react';
 import { LIMITS } from '@shared/constants';
 import type { Tag, ViewKind } from '@shared/types';
 import { compareTagNames } from '@shared/markdown-utils';
 import { cn } from '../../lib/cn';
 import { Avatar, IconButton, Logo, SectionLabel } from '../../components/primitives';
 import { Menu, Tooltip, confirm, useContextMenu, type MenuItem } from '../../components/overlay';
+import { importFileList, SUPPORTED_EXT, type ImportFileResult } from '../../lib/import-files';
+import { openFileImport, registerImportTrigger } from '../../lib/sidebar-file-import';
 import { switchThemeWithTransition, useUi } from '../../store/ui';
 import { useSession } from '../../store/session';
 import { useUpdate } from '../../store/update';
@@ -23,7 +25,83 @@ export function Sidebar({ collapsed = false, onCollapse, }: {
     const view = useUi((s) => s.view);
     const openView = useUi((s) => s.openView);
     const counts = useNavigationCounts();
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const pendingFolderId = useRef<string | null>(null);
+    const [importing, setImporting] = useState(false);
+
+    // Register the global import trigger — SidebarRail button / FolderItem context menu call openFileImport()
+    // and we receive the notification here to click the hidden file input; auto-unbind on unmount
+    useEffect(() => registerImportTrigger((folderId) => {
+        pendingFolderId.current = folderId;
+        fileInputRef.current?.click();
+    }), []);
+
+    /** onChange handler for the hidden file input — performs the actual file conversion + note creation */
+    const handleImportChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const input = event.target;
+        const files = input.files;
+        if (!files || files.length === 0 || importing) {
+            if (input) input.value = '';
+            return;
+        }
+        setImporting(true);
+        try {
+            const supported = Array.from(files).filter((f) => f.name && (
+                f.name.toLowerCase().endsWith('.md')
+                || f.name.toLowerCase().endsWith('.markdown')
+                || f.name.toLowerCase().endsWith('.txt')
+                || f.name.toLowerCase().endsWith('.docx')
+            ));
+            if (supported.length === 0) {
+                await confirm({
+                    title: t('sidebar.import_files'),
+                    description: t('sidebar.import_no_supported_files'),
+                    confirmLabel: t('common.ok'),
+                    cancelLabel: t('common.cancel'),
+                    tone: 'default',
+                });
+                return;
+            }
+            const result: ImportFileResult = await importFileList(
+                supported as unknown as FileList,
+                pendingFolderId.current,
+            );
+            if (result.failed > 0) {
+                await confirm({
+                    title: t('sidebar.import_files'),
+                    description: t('sidebar.import_result_partial', { created: result.created, failed: result.failed }),
+                    confirmLabel: t('common.ok'),
+                    cancelLabel: t('common.cancel'),
+                    tone: 'default',
+                });
+            } else {
+                await confirm({
+                    title: t('sidebar.import_files'),
+                    description: t('sidebar.import_result_ok', { count: result.created }),
+                    confirmLabel: t('common.ok'),
+                    cancelLabel: t('common.cancel'),
+                    tone: 'default',
+                });
+            }
+        } catch (err) {
+            console.error('[inkstone] file import failed:', err);
+        } finally {
+            setImporting(false);
+            if (input) input.value = '';
+        }
+    };
+
     return (<>
+        {/* Hidden file input; all import entry points call openFileImport() which triggers click() on it */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept={SUPPORTED_EXT.join(',')}
+          onChange={handleImportChange}
+          style={{ display: 'none' }}
+          aria-hidden="true"
+        />
         {collapsed ? <SidebarRail onExpand={onCollapse}/> : (<aside className="flex h-full min-h-0 flex-col bg-[var(--bg-sunken)]">
       <header className="flex h-11 shrink-0 items-center justify-between border-b border-[var(--border-subtle)] px-3">
         <div className="flex min-w-0 items-center gap-[9px] select-none">
@@ -85,6 +163,7 @@ function SidebarRail({ onExpand }: {
         <RailButton label={t("navigation.trash")} active={view === 'trash'} icon={<Trash2 size={16}/>} onClick={() => openView('trash')}/>
         <div className="my-1 h-px w-6 bg-[var(--border-subtle)]"/>
         <RailButton label={t("common.new_note")} combo="mod+n" accent icon={<FilePlus2 size={16}/>} onClick={() => void createContextualNote()}/>
+        <RailButton label={t("sidebar.import_files")} icon={<FileUp size={16}/>} onClick={() => openFileImport(null)}/>
       </div>
 
       <span className="flex-1"/>
@@ -476,6 +555,7 @@ function FolderRow({ node, siblings, index, parentNode, parentSiblings, onCreate
     const menuItems: MenuItem[] = [
         { id: 'rename', label: t("sidebar.rename"), onSelect: () => onStartRename(node.id) },
         { id: 'new-note', label: t("sidebar.create_new_note_here"), icon: <FilePlus2 size={13}/>, onSelect: () => void useNotes.getState().createNote({ folderId: node.id }) },
+        { id: 'import-here', label: t("sidebar.import_files_here"), icon: <FileUp size={13}/>, onSelect: () => openFileImport(node.id) },
         { id: 'new-child', label: t("sidebar.new_subfolder"), icon: <FolderPlus size={13}/>, disabled: !canCreateChild, onSelect: () => onCreateChild(node.id) },
         { id: 'appearance', label: t("folders.appearance"), icon: <Palette size={13}/>, onSelect: () => onEditAppearance(node.id) },
         { id: 'move-to', label: t("folders.move_to"), icon: <FolderInput size={13}/>, separatorBefore: true, onSelect: () => onChooseParent(node.id) },

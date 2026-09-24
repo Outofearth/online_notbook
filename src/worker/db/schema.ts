@@ -766,30 +766,30 @@ async function readStoredDatabaseState(db: D1Database): Promise<DatabaseState | 
 }
 
 
-/** meta key 用于标记已通过环境变量 seed 过管理员，避免每次启动都尝试。 */
+/** meta key used to mark that admin has already been seeded via env vars, so we don't retry every boot */
 const ADMIN_SEEDED_KEY = 'system:admin_seeded'
 
 /**
- * 首次启动时，如果环境变量 ADMINISTRATOR / ADMINPASSWORD 存在，且 users 表为空，
- * 自动创建一个 Owner 账号。失败只 warn 不中断 Worker 启动。
+ * On first launch, if env vars ADMINISTRATOR / ADMINPASSWORD are set and the users table is empty,
+ * auto-create an Owner account. Failure only warns and does not block Worker startup.
  */
 async function seedConfiguredAdmin(env: Env): Promise<void> {
   const rawUsername = env.ADMINISTRATOR?.trim()
   const rawPassword = env.ADMINPASSWORD
 
-  // 两个变量必须同时配置才走 seed
+  // Both variables must be configured together for seeding to proceed
   if (!rawUsername || !rawPassword) return
 
   const username = normalizeUsername(rawUsername)
 
-  // 幂等标记：已 seed 过则跳过（不管 users 表后来有没有被手动清空）
+  // Idempotency marker: skip if already seeded (regardless of whether users table was later cleared manually)
   if (await getMeta(env.DB, ADMIN_SEEDED_KEY) === '1') return
 
-  // users 表必须为空才 seed（尊重用户可能已有其他账号的场景）
+  // Only seed when the users table is empty (honor cases where user may already have other accounts)
   const countRow = await env.DB.prepare(`SELECT 1 AS n FROM users LIMIT 1`).first<{ n: number }>()
   if (countRow?.n) return
 
-  // 基本安全校验
+  // Basic security validation
   const passwordError = validateNewPassword(rawPassword)
   if (passwordError) {
     console.warn(`[inkstone] skip admin seed (ADMINPASSWORD too weak): ${passwordError}`)

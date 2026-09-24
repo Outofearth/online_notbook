@@ -4,12 +4,12 @@ import { ApiError } from '../lib/errors'
 import { JSON_BODY_LIMITS, readJson } from '../lib/request'
 import { requireAuth } from '../middleware/auth'
 
-/** 用户管理路由 (仅 owner 可访问) */
+/** User management routes (owner access only) */
 export const adminRoutes = new Hono<AppBindings>()
 
 adminRoutes.use('*', requireAuth)
 
-/** 通用 owner 守卫 */
+/** Generic owner-only guard */
 function requireOwner(c: { get: (key: 'user') => { role: 'owner' | 'member'; id: string } }) {
   if (c.get('user').role !== 'owner') {
     throw ApiError.forbidden('Only the owner can access this endpoint')
@@ -18,7 +18,7 @@ function requireOwner(c: { get: (key: 'user') => { role: 'owner' | 'member'; id:
 
 /**
  * GET /api/admin/users
- * 返回所有用户的列表 (不含密码哈希)
+ * Returns the list of all users (password hashes excluded)
  */
 adminRoutes.get('/users', async (c) => {
   requireOwner(c)
@@ -54,9 +54,9 @@ interface UserRow {
 
 /**
  * PATCH /api/admin/users/:id/role
- * 修改用户角色 (member ↔ owner)
- * - 不允许 owner 把自己降为 member (系统必须有至少 1 个 owner)
- * - 不允许对 user id 不存在的用户操作
+ * Change user role (member ↔ owner)
+ * - Owner cannot demote themselves to member (system must keep at least one owner)
+ * - Operation is rejected when the target user id does not exist
  */
 adminRoutes.patch('/users/:id/role', async (c) => {
   requireOwner(c)
@@ -71,13 +71,13 @@ adminRoutes.patch('/users/:id/role', async (c) => {
     throw ApiError.badRequest('You cannot change your own role')
   }
 
-  // 读目标用户
+  // Read the target user
   const target = await c.env.DB.prepare(
     `SELECT id, role FROM users WHERE id = ?1`,
   ).bind(targetId).first<{ id: string; role: 'owner' | 'member' }>()
   if (!target) throw ApiError.notFound('User not found')
 
-  // 如果要降级 owner → member, 先确认系统里还剩至少 1 个 owner
+  // If downgrading owner → member, confirm at least one owner remains in the system
   if (target.role === 'owner' && body.role === 'member') {
     const ownerCount = await c.env.DB.prepare(
       `SELECT COUNT(*) AS n FROM users WHERE role = 'owner'`,
@@ -96,8 +96,8 @@ adminRoutes.patch('/users/:id/role', async (c) => {
 
 /**
  * DELETE /api/admin/users/:id
- * 删除一个 member 用户 (owner 不能被删除)
- * 级联清理所有关联表 + 将附件标记为待清理
+ * Delete a member user (owner cannot be deleted)
+ * Cascades cleanup of all related tables + marks attachments for pending cleanup
  */
 adminRoutes.delete('/users/:id', async (c) => {
   requireOwner(c)
@@ -122,22 +122,22 @@ adminRoutes.delete('/users/:id', async (c) => {
 })
 
 /**
- * 删除用户及其所有关联数据
- * 注意: attachment 二进制 (R2/KV) 通过 attachment_cleanup 表做异步清理,
- *       调用方需确保定期触发清理
+ * Deletes a user and all their related data
+ * Note: attachment binaries (R2/KV) are cleaned up asynchronously via the attachment_cleanup
+ * table; the caller is expected to trigger cleanup regularly.
  */
 async function deleteUserAndCascade(db: D1Database, userId: string): Promise<void> {
   const now = Date.now()
 
-  // 把 attachment 登记到 attachment_cleanup (供 Worker 定期异步清理 R2 对象)
+  // Register attachments in attachment_cleanup (Worker asynchronously purges R2 objects later)
   await db.prepare(
     `INSERT OR IGNORE INTO attachment_cleanup (user_id, object_key, created_at)
      SELECT ?1, object_key, ?2 FROM attachments WHERE user_id = ?1 AND object_key IS NOT NULL`,
   ).bind(userId, now).run()
 
-  // 按依赖顺序删除 (先删依赖表, 再删主表)
+  // Delete in dependency order (dependent tables first, then main tables)
   const statements = [
-    // --- 完全独立 / 轻量表 ---
+    // --- Fully independent / light tables ---
     `DELETE FROM login_attempts WHERE user_id = ?1`,
     `DELETE FROM totp_login_challenges WHERE user_id = ?1`,
     `DELETE FROM totp_recovery_codes WHERE user_id = ?1`,
@@ -150,7 +150,7 @@ async function deleteUserAndCascade(db: D1Database, userId: string): Promise<voi
     `DELETE FROM share_asset_sessions WHERE share_id IN (SELECT id FROM shares WHERE user_id = ?1)`,
     `DELETE FROM shares WHERE user_id = ?1`,
 
-    // --- 依赖 notes 的表 ---
+    // --- Tables that depend on notes ---
     `DELETE FROM note_tags WHERE user_id = ?1`,
     `DELETE FROM links WHERE user_id = ?1`,
     `DELETE FROM note_versions WHERE user_id = ?1`,
@@ -158,24 +158,24 @@ async function deleteUserAndCascade(db: D1Database, userId: string): Promise<voi
     `DELETE FROM ai_index_queue WHERE user_id = ?1`,
     `DELETE FROM fts_index_queue WHERE user_id = ?1`,
 
-    // --- 主数据 ---
+    // --- Main data ---
     `DELETE FROM note_tags WHERE note_id IN (SELECT id FROM notes WHERE user_id = ?1)`,
     `DELETE FROM notes WHERE user_id = ?1`,
     `DELETE FROM folders WHERE user_id = ?1`,
     `DELETE FROM tags WHERE user_id = ?1`,
 
-    // --- 附件 & 备份 ---
+    // --- Attachments & backups ---
     `DELETE FROM attachments WHERE user_id = ?1`,
     `DELETE FROM backup_runs WHERE user_id = ?1`,
     `DELETE FROM backup_targets WHERE user_id = ?1`,
     `DELETE FROM import_mappings WHERE user_id = ?1`,
     `DELETE FROM attachment_cleanup WHERE user_id = ?1`,
 
-    // --- 最后删 users 本身 ---
+    // --- Finally remove the user itself ---
     `DELETE FROM users WHERE id = ?1`,
   ]
 
-  // D1 单条 .run() 足够, 但为了好 debug 我们一条条执行
+  // A single .run() is enough for D1, but execute one by one to make debugging easier
   for (const sql of statements) {
     await db.prepare(sql).bind(userId).run()
   }

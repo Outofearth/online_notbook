@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { EditorView } from '@codemirror/view';
-import { ArrowLeft, Columns2, Download, Eye, FileCode, FileDown, FileText, FolderClosed, Hash, History, Link as LinkIcon, ListTree, MoreHorizontal, PanelRightClose, Pencil, Plus, Share2, Star, X, } from 'lucide-react';
+import { ArrowLeft, Columns2, Download, Eye, FileCode, FileDown, FileText, FolderClosed, Hash, History, Link as LinkIcon, ListTree, MoreHorizontal, PanelRightClose, Pencil, Plus, Share2, Sparkles, Star, X, } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { api } from '../../lib/api';
 import { readingMinutes } from '@shared/markdown-utils';
@@ -244,6 +244,26 @@ export function Workspace({ onMobileBack, pane = 'active', grouped = false, }: {
             });
         }
     };
+
+    /** Summarize a single AI note — hits Worker /api/ai/summarize/:noteId, shows result as toast */
+    const summarizeCurrentNote = async (noteId: string) => {
+        try {
+            const result = await api.ai.summarize(noteId);
+            toast({
+                title: t("workspace.ai_summarize_result"),
+                description: result.summary,
+                tone: 'default',
+            });
+        }
+        catch (err) {
+            toast({
+                title: t("workspace.ai_summarize_failed"),
+                description: err instanceof Error ? err.message : String(err),
+                tone: 'danger',
+            });
+        }
+    };
+
     const exportMenuItems: MenuItem[] = [
         { id: 'md', label: t("workspace.export_markdown"), icon: <FileText size={13}/>, onSelect: () => void exportNote('md') },
         { id: 'html', label: t("workspace.export_html"), icon: <FileCode size={13}/>, onSelect: () => void exportNote('html') },
@@ -378,6 +398,17 @@ export function Workspace({ onMobileBack, pane = 'active', grouped = false, }: {
             { value: 'preview', label: <Eye size={12.5}/>, title: t("workspace.reading_mode") },
         ]}/>
           </div>
+          {!isMobile && (<>
+          <Tooltip label={t("workspace.ai_summarize")}>
+            <IconButton
+              label={t("workspace.ai_summarize")}
+              size="sm"
+              onClick={() => void summarizeCurrentNote(note.id)}
+            >
+              <Sparkles size={14}/>
+            </IconButton>
+          </Tooltip>
+          </>)}
           {!isMobile && <><Tooltip label={note.isStarred ? t("common.remove_from_favorites") : t("navigation.favorites")} combo="mod+d">
             <IconButton label={note.isStarred ? t("common.remove_from_favorites") : t("navigation.favorites")} size="sm" active={note.isStarred} onClick={() => void patchNote(note.id, { isStarred: !note.isStarred })}>
               <Star size={14} className={note.isStarred ? 'fill-current' : undefined}/>

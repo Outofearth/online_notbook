@@ -81,7 +81,7 @@ export function DataSettings() {
         await run(`export-${format}`, async () => {
             try {
                 await api.transfer.save(format, encryptExport ? exportPassword : undefined);
-                // 导出完成后清除密码 (防止在 UI 中停留)
+                // Clear password after export completes (avoid lingering in UI)
                 setExportPassword('');
                 setExportPasswordConfirm('');
             }
@@ -178,7 +178,7 @@ export function DataSettings() {
           <Button size="sm" variant="ghost" icon={<FileJson size={13}/>} loading={busy === 'export-json'} disabled={busy !== null} onClick={() => void exportData('json')}>{t("settings.download_json")}</Button>
         </SettingRow>
 
-        {/* 客户端密码加密导出 */}
+        {/* Client-side password-encrypted export */}
         <div className="mt-3 rounded-[var(--r-md)] border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-3">
           <label className="flex cursor-pointer items-center gap-2 text-[12.5px] font-medium text-[var(--text-primary)]">
             <input
@@ -220,7 +220,7 @@ export function DataSettings() {
                 </div>
               </div>
 
-              {/* 密码强度条 */}
+              {/* Password strength indicator */}
               {exportPassword.length > 0 && (
                 <div className="flex items-center gap-2">
                   <div className="flex gap-1">
@@ -294,10 +294,10 @@ export function DataSettings() {
             event.target.value = '';
             if (!files.length)
                 return;
-            // 检测是否有加密备份文件
+            // Detect whether any encrypted backup files are present
             const encryptedFiles = files.filter((f) => isEncryptedBackupFilename(f.name));
             const plainFiles = files.filter((f) => !isEncryptedBackupFilename(f.name));
-            // 如果全是加密文件，弹密码框解密后再导入
+            // If there are encrypted files, prompt for password to decrypt before importing
             if (encryptedFiles.length > 0) {
                 if (plainFiles.length > 0) {
                     toast({ title: t('settings.encryption_mixed_import'), tone: 'warning' });
@@ -308,7 +308,7 @@ export function DataSettings() {
                 setDecryptDialogOpen(true);
                 return;
             }
-            // 普通文件 → 直接导入
+            // Plain files → import directly
             await run('import', async () => {
                 try {
                     const result = await api.transfer.import(plainFiles);
@@ -392,7 +392,7 @@ export function DataSettings() {
         </SettingRow>
       </section>
 
-      {/* 加密备份解密弹窗 */}
+      {/* Encrypted backup decryption dialog */}
       <Modal
         open={decryptDialogOpen}
         onClose={() => {
@@ -412,7 +412,7 @@ export function DataSettings() {
                     const decrypted: File[] = [];
                     for (const enc of pendingEncryptedFiles) {
                         const blob = await decryptBackupBlob(decryptPassword, enc);
-                        // 解密后当作 ZIP 处理 (覆盖原 .enc 的 name 改为 .zip)
+                        // Treat the decrypted file as a ZIP (rename from .enc to .zip)
                         const zipName = enc.name.replace(/\.enc$/i, '.zip');
                         decrypted.push(new File([blob], zipName, { type: 'application/zip' }));
                     }
@@ -420,7 +420,7 @@ export function DataSettings() {
                     setDecryptPassword('');
                     setDecryptError(null);
                     setPendingEncryptedFiles([]);
-                    // 解密完成后走正常导入
+                    // After decryption completes, proceed with normal import
                     await run('import', async () => {
                         try {
                             const result = await api.transfer.import(decrypted);

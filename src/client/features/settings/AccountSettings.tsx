@@ -475,7 +475,7 @@ interface AdminUserRow {
   lastSeenAt: number
 }
 
-/** 管理员用户管理面板 (仅 owner 可见) */
+/** Admin user management panel (owner visibility only) */
 function UserManagementSection() {
   const toast = useUi((state) => state.toast)
   const currentUserId = useSession((state) => state.user?.id ?? '')
@@ -575,7 +575,7 @@ function UserManagementSection() {
           icon={<RefreshCw size={12} className={loading ? 'animate-[ink-spin_.7s_linear_infinite]' : ''} />}
           onClick={() => void load()}
           disabled={loading}
-          aria-label="刷新"
+          aria-label={t('app.reload')}
         />
       </div>
 
@@ -658,7 +658,7 @@ function UserManagementSection() {
   )
 }
 
-/** 相对时间描述 (X 分钟前 / 昨天 / 日期) */
+/** Relative time description (X minutes ago / yesterday / date) */
 function formatRelative(timestamp: number): string {
   const now = Date.now()
   const diffMs = Math.max(0, now - timestamp)
