@@ -333,22 +333,52 @@ aiRoutes.post('/chat', async (c) => {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Lexical LIKE search — fallback when semantic is unavailable */
+/** Common English stopwords — removed before building the lexical query */
+const STOPWORDS = new Set([
+  'a','an','the','and','or','but','if','then','else','when','where','why','how','what','who','which','that','this',
+  'is','are','was','were','be','been','being','have','has','had','do','does','did','will','would','could','should',
+  'may','might','must','shall','can','to','of','in','on','at','by','for','with','from','as','into','about','than',
+  'so','not','no','yes','also','too','very','just','it','its','i','me','my','we','our','you','your','he','him',
+  'she','her','they','them','their','us','here','there','now','let','make','made','get','got','like','use','used',
+])
+
+/** Lexical LIKE search — splits the question into keywords and ORs them together.
+ *  This fixes the previous bug where a full-sentence LIKE pattern (e.g.
+ *  `%what is cloudflare workers ai%`) would never match notes written differently. */
 async function lexicalSearch(
   db: D1Database,
   userId: string,
   query: string,
   limit: number,
 ): Promise<Array<{ id: string; title: string; excerpt: string; updatedAt: number }>> {
-  // Escape LIKE wildcards the user might type in their query
-  const safeQuery = query.replace(/[%_]/g, (c) => `\\${c}`)
-  const pattern = `%${safeQuery}%`
-  const { results } = await db.prepare(
-    `SELECT id, title, excerpt, updated_at FROM notes
-       WHERE user_id = ?1 AND deleted_at IS NULL
-       AND (title LIKE ?2 ESCAPE '\\' OR excerpt LIKE ?2 ESCAPE '\\' OR content LIKE ?2 ESCAPE '\\')
-       LIMIT ?3`,
-  ).bind(userId, pattern, limit).all<{ id: string; title: string; excerpt: string; updated_at: number }>()
+  // Split into lowercase keywords, strip punctuation, remove short + stopwords
+  const keywords = query
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !STOPWORDS.has(w))
+
+  if (keywords.length === 0) return []
+
+  // Build one OR group per keyword, each checking title/excerpt/content.
+  // D1 (SQLite) does not support the ESCAPE clause, but keywords have already
+  // been lowercased, stripped of punctuation, and filtered of %/_ — safe to LIKE directly.
+  const groups = keywords.map(() =>
+    '(title LIKE ? OR excerpt LIKE ? OR content LIKE ?)',
+  )
+  const placeholders = keywords.flatMap((k) => [`%${k}%`, `%${k}%`, `%${k}%`])
+
+  const lastPlaceholder = placeholders.length + 2
+  const sql = `SELECT DISTINCT id, title, excerpt, updated_at FROM notes
+                WHERE user_id = ?1 AND deleted_at IS NULL
+                AND (${groups.join(' OR ')})
+                LIMIT ?${lastPlaceholder}`
+
+  const { results } = await db
+    .prepare(sql)
+    .bind(userId, ...placeholders, limit)
+    .all<{ id: string; title: string; excerpt: string; updated_at: number }>()
+
   return results.map((r) => ({
     id: r.id,
     title: r.title,
