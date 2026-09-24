@@ -785,9 +785,12 @@ async function seedConfiguredAdmin(env: Env): Promise<void> {
   // Idempotency marker: skip if already seeded (regardless of whether users table was later cleared manually)
   if (await getMeta(env.DB, ADMIN_SEEDED_KEY) === '1') return
 
-  // Only seed when the users table is empty (honor cases where user may already have other accounts)
-  const countRow = await env.DB.prepare(`SELECT 1 AS n FROM users LIMIT 1`).first<{ n: number }>()
-  if (countRow?.n) return
+  // Only seed if no admin account exists yet (honor cases where user may already have other accounts)
+  // This fixes the issue where manually deleting admin + reseed flag but leaving other
+  // member accounts would prevent reseeding — previously we required the ENTIRE users table empty.
+  const adminRow = await env.DB.prepare(`SELECT id FROM users WHERE username = ?1 LIMIT 1`)
+    .bind(username).first<{ id: string }>()
+  if (adminRow?.id) return
 
   // Basic security validation
   const passwordError = validateNewPassword(rawPassword)
