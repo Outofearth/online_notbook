@@ -59,8 +59,63 @@ Inkstone 是运行在 Cloudflare Workers 上的浏览器笔记本。笔记始终
 4. 使用 R2 时，构建命令填 `npm run build`，部署命令填 `npm run deploy`
    - 如果你打算用 KV 模式，把部署命令改成 `npm run deploy:kv`
 5. 等部署完成后，打开生成的 Workers 域名
+6. （推荐）前往 **Settings → Variables and Secrets**，按下方「环境变量」章节覆盖 `ADMINISTRATOR` / `ADMINPASSWORD` 后再允许他人注册。
 
 现有数据库会通过带版本号、可重复安全执行的迁移自动升级。自托管实例更新前仍建议保留一份最新备份；发现新的稳定版本时，只有站长会收到专门的更新提醒，不会打扰普通成员。
+
+## 环境变量
+
+可以在 `wrangler.toml` 的 `[vars]` 里设置，也可以到 Cloudflare Dashboard 的 **Settings → Variables and Secrets** 覆盖。Dashboard 的值优先级始终高于 `wrangler.toml`。
+
+| 变量 | 类型 | 必填 | 默认值 | 用途 |
+| --- | --- | --- | --- | --- |
+| `APP_NAME` | Variable | 否 | `Inkstone` | 前端 UI 与 meta 标签显示的站点名 |
+| **`ADMINISTRATOR`** | Variable | 否 | `admin` | 首次启动（`users` 表为空）时自动 seed 的 owner 账号用户名。已有账号或数据库已初始化后即被忽略。 |
+| **`ADMINPASSWORD`** | **Secret** | 否 | `admin123456` | 首次启动时自动 seed 的 owner 账号密码。**生产环境务必覆盖默认值** — 设置为 Secret，不要写进 Variable。使用 scrypt（`N=16384, r=8, p=5`）哈希，绝不以明文形式存储。 |
+| `PUBLIC_URL` | Variable | 否 | *(无)* | 可选的公开域名，用于备份和公开分享生成绝对链接 |
+
+### 首次启动自动创建 owner 账号（ADMINISTRATOR + ADMINPASSWORD）
+
+当两个变量**都被设置**且 `users` 表为空时，Worker 会自动创建一个 `owner` 账号。这个过程**仅执行一次**：seed 完成后会往 `app_meta` 写入标记（`system:admin_seeded = 1`），后续重启都跳过 — 即便后来清空过 users 表。密码弱于常规注册规则（≥ 8 位）或用户名非法（3-32 位、只能小写字母/数字/_/-）时 seed 也会跳过。
+
+**Cloudflare 生产环境**的推荐操作：
+1. Worker → **Settings → Variables and Secrets**
+2. 新增 **`ADMINISTRATOR`** 为普通 **Variable**，填入你选定的用户名
+3. 新增 **`ADMINPASSWORD`** 为 **Secret**（🔒），填入强密码
+4. 保存，下次部署或首次启动即自动创建
+5. 立刻登录，在 **Settings → 账户 → 登录安全** 里改成另一个强密码
+
+> **安全提示**：`admin123456` 只是 `wrangler.toml` 里的兜底默认值，**互联网暴露的部署上绝不能留这个默认值**。务必在 Cloudflare Dashboard 里把 ADMINPASSWORD 设置为 Secret（Secret 永远不会进入 `wrangler.toml`、构建日志或前端代码）。
+
+## 客户端加密备份导出
+
+除了普通的 JSON 和 ZIP 导出，Inkstone 还支持**密码加密**的 ZIP 备份。加密全程发生在浏览器里，Worker 永远拿不到密钥。
+
+| 属性 | 说明 |
+| --- | --- |
+| 算法 | AES-256-GCM + PBKDF2-SHA256（60 万次迭代，零 npm 依赖） |
+| 文件格式 | `.enc` 后缀，魔数头 `INKENC` + 版本字节 + 保留字节 + 16 B salt + 12 B IV + 密文 |
+| 密钥派生 | PBKDF2（你的密码 + 每文件随机 salt） |
+| 启用位置 | **Settings → 数据 → 导出 → "使用密码加密导出"** |
+| 恢复方式 | 回到同一数据页上传 `.enc` 文件并输入密码 — Worker 收到明文 ZIP 后走标准导入流程 |
+| 密码策略 | 与登录密码一致，≥ 8 位；弱密码在导出时被拒绝 |
+| 安全保证 | 1) 密钥永远不离开浏览器。2) 密码错误会解密失败，不会半导入。3) 密文被篡改会被检测到（AES-GCM 认证标签）。 |
+
+服务端无需额外配置 — 功能直接内置于前端构建产物。
+
+## 站长用户管理（owner 专属）
+
+站长可在 **Settings → 账户 → 访问控制 → 用户管理** 管理所有成员账号。
+
+| 操作 | 入口 | 安全约束 |
+| --- | --- | --- |
+| **查看列表** | 面板加载时自动拉取 | 仅 owner 可见该面板 |
+| **提升为 owner** | 成员行上的 ⬆ 按钮 | 不能提升/降级自己 |
+| **降级为成员** | owner 行上的 ⬇ 按钮 | **最后一个 owner 不能被降级**（系统必须至少保留一个 owner） |
+| **删除成员** | 行末 🗑️ 按钮 → 确认 | 不能删除 owner、不能删除自己。该成员名下所有笔记、文件夹、标签、附件、版本、会话、TOTP、OAuth 授权和备份**都会被永久清除**。 |
+| **开启/关闭注册** | **Settings → 账户 → 访问控制 → 允许注册** | 仅 owner 可操作、需输入当前密码。开启后，访客登录页会出现注册入口，新账号自动是 **member**（不是 owner）。 |
+
+所有变更服务端都有保护，前端 UI 只是额外的便利层。站长身份完全由 D1 `users.role = 'owner'` 字段决定，不存在额外的 `is_owner` 标志。
 
 ## 导出与备份
 
@@ -78,6 +133,7 @@ Inkstone 是运行在 Cloudflare Workers 上的浏览器笔记本。笔记始终
 | `npm run dev` | 启动本地 Worker 和前端 |
 | `npm run dev:kv` | 使用 KV 附件配置启动本地环境 |
 | `npm run dev:demo` | 启动刷新即重置的纯前端体验版 |
+| `./scripts/dev-clean.ps1` | **Windows 专用** — 结束端口 7712 进程、擦除 `.wrangler`、启用临时 D1 启动 `npm run dev`。每次运行都是全新空数据库，适合重置用户或复现 bug。 |
 | `npm run typecheck` | 执行 TypeScript 项目检查 |
 | `npm run test:unit` | 运行 Vitest 单元测试 |
 | `npm run i18n:check` | 检查中英文资源键是否完整一致 |
