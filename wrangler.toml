@@ -59,8 +59,9 @@ crons = ["0 * * * *", "15,45 * * * *"]
 
 [vars]
 APP_NAME = "Inkstone"
-ADMINISTRATOR = "admin"
-ADMINPASSWORD = "admin123456"
+# NOTE: ADMINISTRATOR / ADMINPASSWORD MUST be set as encrypted Secrets,
+# never as plain-text vars. Use `npx wrangler secret put <name>` or the
+# Cloudflare Dashboard → Workers → inkstone → Settings → Secrets.
 
 [observability]
 enabled = true
