@@ -110,8 +110,12 @@ const config: UserConfigFnPromise = async ({ mode, command }) => ({
       checks: {
         pluginTimings: false,
       },
+      // Rolldown's tree-shaking is too aggressive with React conditional JSX —
+      // it drops code inside `{!isMobile && (<>...</>)}` blocks even when they
+      // reference dynamically-resolved functions. Disable to preserve Phase 1/2 features.
+      treeshake: false,
       output: {
-        minify: true,
+        minify: false,
         codeSplitting: {
           groups: [
             {
