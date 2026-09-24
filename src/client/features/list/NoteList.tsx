@@ -1,5 +1,5 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ArrowDownWideNarrow, CheckSquare2, Columns2, Copy, FileCode, FileDown, FileText, FolderInput, MoreHorizontal, Pin, PinOff, PanelLeft, Plus, RotateCcw, Search, Star, StarOff, Trash2, X, } from 'lucide-react';
+import { Archive, ArrowDownWideNarrow, CheckSquare2, Columns2, Copy, FileCode, FileDown, FileText, FileUp, FolderInput, Globe, MoreHorizontal, Pin, PinOff, PanelLeft, Plus, RotateCcw, Search, Star, StarOff, Trash2, X, } from 'lucide-react';
 import type { NoteSummary, SortKey, ViewKind } from '@shared/types';
 import { cn } from '../../lib/cn';
 import { groupLabel } from '../../lib/time';
@@ -14,9 +14,11 @@ import { Empty, NoteListSkeleton } from '../../components/feedback';
 import { useUi } from '../../store/ui';
 import { createContextualNote, useNotes, useVisibleNotes } from '../../store/notes';
 import { folderPathLabel } from '../../lib/folders';
+import { openFileImport } from '../../lib/sidebar-file-import';
 import { FolderPicker } from '../folders/FolderPicker';
 import { t, useLocale, type MessageKey } from "../../lib/i18n";
 import { MobileLibraryFilters } from '../shell/MobileLibraryFilters';
+import { openUrlImport } from '../sidebar/Sidebar';
 const VIEW_MESSAGE_KEYS: Record<ViewKind, MessageKey> = {
     all: 'navigation.all_notes',
     recent: 'navigation.recently_edited',
@@ -230,6 +232,17 @@ export function NoteList() {
                 </button>
               </Tooltip>)}
           </div>
+          {/* Mobile has no sidebar, so the library toolbar is the only place these can live. */}
+          <Tooltip label={t("sidebar.import_files")}>
+            <IconButton label={t("sidebar.import_files")} size="sm" className="mobile-library-import" onClick={() => openFileImport(null)}>
+              <FileUp size={17}/>
+            </IconButton>
+          </Tooltip>
+          <Tooltip label={t("sidebar.import_url")}>
+            <IconButton label={t("sidebar.import_url")} size="sm" className="mobile-library-import" onClick={() => void openUrlImport(null)}>
+              <Globe size={17}/>
+            </IconButton>
+          </Tooltip>
           <Tooltip label={t("notes.sort_and_display")}>
             <IconButton label={t("notes.sort_and_display")} size="sm" className="mobile-library-sort" ref={sortButtonRef} onClick={() => setSortMenuOpen(true)}>
               <ArrowDownWideNarrow size={17}/>
