@@ -203,9 +203,9 @@ authRoutes.post('/login', async (c) => {
 
   const row = USERNAME_PATTERN.test(username)
     ? await db
-        .prepare(`SELECT ${USER_COLUMNS}, password_hash FROM users WHERE username = ?1`)
+        .prepare(`SELECT ${USER_COLUMNS}, password_hash, disabled_at FROM users WHERE username = ?1`)
         .bind(username)
-        .first<Parameters<typeof rowToUser>[0] & { password_hash: string }>()
+        .first<Parameters<typeof rowToUser>[0] & { password_hash: string; disabled_at: number | null }>()
     : null
 
   let valid = false
@@ -222,6 +222,12 @@ authRoutes.post('/login', async (c) => {
   if (!valid || !row) {
     await recordLoginFailure(db, throttleTargets)
     throw new ApiError(401, 'invalid_credentials', "Incorrect username or password")
+  }
+
+  // Checked only after the password verifies, so a suspended account is not
+  // distinguishable from a wrong password to anyone who does not hold the credential.
+  if (row.disabled_at !== null) {
+    throw new ApiError(403, 'account_disabled', 'This account has been suspended by the owner')
   }
 
   // A successful sign-in proves this identity and IP are legitimate:

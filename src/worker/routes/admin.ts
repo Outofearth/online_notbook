@@ -57,7 +57,7 @@ adminRoutes.get('/users', async (c) => {
   requireOwner(c)
   const configuredOwner = configuredOwnerUsername(c.env)
   const result = await c.env.DB.prepare(
-    `SELECT id, username, login, name, avatar_url, role, created_at, last_seen_at
+    `SELECT id, username, login, name, avatar_url, role, disabled_at, created_at, last_seen_at
        FROM users
        ORDER BY role = 'owner' DESC, created_at ASC`,
   ).all<UserRow>()
@@ -71,6 +71,7 @@ adminRoutes.get('/users', async (c) => {
       role: row.role,
       createdAt: row.created_at,
       lastSeenAt: row.last_seen_at,
+      disabledAt: row.disabled_at,
       // The account governed by the ADMINISTRATOR secret cannot be managed from the
       // UI, so the client needs to know which row that is.
       isConfiguredOwner: row.username === configuredOwner,
@@ -85,6 +86,7 @@ interface UserRow {
   name: string
   avatar_url: string
   role: 'owner' | 'member'
+  disabled_at: number | null
   created_at: number
   last_seen_at: number
 }
@@ -236,6 +238,62 @@ adminRoutes.post('/users/:id/password', async (c) => {
 
   console.info(`[inkstone] Owner reset the password for "${target.username}".`)
   return c.json({ ok: true, password })
+})
+
+/**
+ * PATCH /api/admin/users/:id/status
+ * Suspends or restores an account. A suspended account keeps every note, attachment
+ * and setting, but can no longer sign in and loses its sessions immediately.
+ */
+adminRoutes.patch('/users/:id/status', async (c) => {
+  requireOwner(c)
+  const targetId = c.req.param('id')!
+  const currentUserId = c.get('user').id
+
+  if (targetId === currentUserId) {
+    throw ApiError.badRequest('You cannot suspend your own account')
+  }
+
+  await enforceAdminBudget(c.env, currentUserId, 'user-status')
+
+  const body = await readJson<{ disabled?: boolean }>(c, JSON_BODY_LIMITS.small)
+  if (typeof body.disabled !== 'boolean') {
+    throw ApiError.badRequest('disabled must be a boolean')
+  }
+
+  const target = await c.env.DB.prepare(
+    `SELECT id, username, role FROM users WHERE id = ?1`,
+  ).bind(targetId).first<{ id: string; username: string; role: 'owner' | 'member' }>()
+  if (!target) throw ApiError.notFound('User not found')
+
+  if (target.username === configuredOwnerUsername(c.env)) {
+    throw ApiError.badRequest('The account named by ADMINISTRATOR cannot be suspended')
+  }
+
+  // Suspending the last usable owner would leave nobody able to administer the instance.
+  if (body.disabled && target.role === 'owner') {
+    const activeOwners = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM users WHERE role = 'owner' AND disabled_at IS NULL`,
+    ).first<{ n: number }>()
+    if ((activeOwners?.n ?? 0) <= 1) {
+      throw ApiError.badRequest('You cannot suspend the last active owner account')
+    }
+  }
+
+  const statements: D1PreparedStatement[] = [
+    c.env.DB.prepare(`UPDATE users SET disabled_at = ?1 WHERE id = ?2`)
+      .bind(body.disabled ? Date.now() : null, targetId),
+  ]
+  if (body.disabled) {
+    // Suspension has to take effect at once rather than at the next sign-in.
+    statements.push(c.env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?1`).bind(targetId))
+  }
+  await c.env.DB.batch(statements)
+
+  console.info(
+    `[inkstone] Owner ${body.disabled ? 'suspended' : 'restored'} the account "${target.username}".`,
+  )
+  return c.json({ ok: true, disabled: body.disabled })
 })
 
 /**

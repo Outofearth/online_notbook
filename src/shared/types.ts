@@ -602,3 +602,4 @@ export type ApiErrorCode =
   | 'two_factor_not_enabled'
   | 'two_factor_setup_expired'
   | 'two_factor_unavailable'
+  | 'account_disabled'

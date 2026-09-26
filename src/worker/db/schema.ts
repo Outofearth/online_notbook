@@ -24,6 +24,7 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
     name TEXT NOT NULL DEFAULT '',
     avatar_url TEXT NOT NULL DEFAULT '',
     role TEXT NOT NULL DEFAULT 'member',
+    disabled_at INTEGER,
     settings TEXT NOT NULL DEFAULT '{}',
     created_at INTEGER NOT NULL,
     last_seen_at INTEGER NOT NULL
@@ -522,6 +523,15 @@ const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
       `CREATE INDEX IF NOT EXISTS idx_versions_user ON note_versions(user_id)`,
     ],
   },
+  {
+    version: 13,
+    skipIfColumnExists: { table: 'users', column: 'disabled_at' },
+    statements: [
+      // Marks an account the owner has suspended: it can no longer sign in, but all
+      // of its data is retained so the account can be re-enabled later.
+      `ALTER TABLE users ADD COLUMN disabled_at INTEGER`,
+    ],
+  },
 ]
 
 const FTS_STATEMENT = `CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
@@ -544,7 +554,7 @@ const INDEX_SCHEMA_STATEMENTS = SCHEMA_STATEMENTS.filter((statement) =>
 const REQUIRED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   app_meta: ['key', 'value'],
   schema_migrations: ['version', 'applied_at'],
-  users: ['id', 'username', 'password_hash', 'login', 'name', 'avatar_url', 'role', 'settings', 'created_at', 'last_seen_at'],
+  users: ['id', 'username', 'password_hash', 'login', 'name', 'avatar_url', 'role', 'disabled_at', 'settings', 'created_at', 'last_seen_at'],
   folders: ['id', 'user_id', 'parent_id', 'name', 'icon', 'color', 'position', 'created_at', 'updated_at', 'deleted_at'],
   notes: ['id', 'user_id', 'folder_id', 'title', 'title_key', 'content', 'excerpt', 'rev', 'word_count', 'char_count', 'is_pinned', 'is_starred', 'is_archived', 'position', 'content_hash', 'created_at', 'updated_at', 'deleted_at'],
   tags: ['id', 'user_id', 'name', 'color', 'is_manual', 'created_at'],

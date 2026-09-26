@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Camera, Check, Copy, KeyRound, LogOut, Plus, RefreshCw, ShieldCheck, Trash2, UserRound } from 'lucide-react'
+import { Ban, Camera, Check, Copy, KeyRound, LogOut, Plus, RefreshCw, RotateCcw, ShieldCheck, Trash2, UserRound } from 'lucide-react'
 import { PROFILE_NAME_MAX_LENGTH } from '@shared/avatar'
 import { LIMITS } from '@shared/constants'
 import { Avatar, Badge, Button } from '../../components/primitives'
@@ -473,6 +473,7 @@ interface AdminUserRow {
   role: 'owner' | 'member'
   createdAt: number
   lastSeenAt: number
+  disabledAt: number | null
   isConfiguredOwner: boolean
 }
 
@@ -555,6 +556,39 @@ function UserManagementSection() {
     } catch (err) {
       toast({
         title: t('settings.user_password_reset_failed'),
+        description: err instanceof Error ? err.message : String(err),
+        tone: 'danger',
+      })
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const onToggleStatus = async (target: AdminUserRow) => {
+    if (target.id === currentUserId) return
+    const nextDisabled = target.disabledAt === null
+    const confirmed = await confirm({
+      title: t(nextDisabled ? 'settings.user_suspend_confirm_title' : 'settings.user_restore_confirm_title'),
+      description: t(
+        nextDisabled
+          ? 'settings.user_suspend_confirm_description'
+          : 'settings.user_restore_confirm_description',
+        { username: target.username },
+      ),
+      confirmLabel: t(nextDisabled ? 'settings.user_suspend' : 'settings.user_restore'),
+    })
+    if (!confirmed) return
+    setBusyId(target.id)
+    try {
+      await api.admin.users.setDisabled(target.id, nextDisabled)
+      toast({
+        title: t(nextDisabled ? 'settings.user_suspended' : 'settings.user_restored'),
+        tone: 'success',
+      })
+      await load()
+    } catch (err) {
+      toast({
+        title: t('settings.user_status_change_failed'),
         description: err instanceof Error ? err.message : String(err),
         tone: 'danger',
       })
@@ -680,6 +714,8 @@ function UserManagementSection() {
             const canDelete = u.role !== 'owner' && !isSelf && !isManaged
             const canToggleRole = !isSelf && !isManaged
             const canResetPassword = !isSelf && !isManaged
+            const canToggleStatus = !isSelf && !isManaged
+            const isSuspended = u.disabledAt !== null
             const protectedHint = isManaged ? t('settings.user_managed_by_configuration') : undefined
             return (
               <li key={u.id} className="flex items-center gap-3 px-4 py-2.5">
@@ -703,6 +739,9 @@ function UserManagementSection() {
                     )}
                     {isManaged && (
                       <Badge tone="neutral">{t('settings.user_managed_by_configuration')}</Badge>
+                    )}
+                    {isSuspended && (
+                      <Badge tone="danger">{t('settings.user_suspended_badge')}</Badge>
                     )}
                   </div>
                   <div className="mt-0.5 text-[11px] text-[var(--text-quaternary)]">
@@ -745,6 +784,18 @@ function UserManagementSection() {
                     onClick={() => void onRemove(u)}
                     title={protectedHint ?? (canDelete ? t('settings.delete_user') : t('settings.owner_cannot_be_deleted'))}
                     className={canDelete ? 'text-[var(--danger)] hover:text-[var(--danger)]' : ''}
+                  />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={isSuspended ? <RotateCcw size={12} /> : <Ban size={12} />}
+                    disabled={!canToggleStatus || isBusy}
+                    loading={isBusy}
+                    onClick={() => void onToggleStatus(u)}
+                    title={protectedHint ?? (canToggleStatus
+                      ? t(isSuspended ? 'settings.user_restore' : 'settings.user_suspend')
+                      : t('settings.cannot_suspend_own_account'))}
+                    aria-label={t(isSuspended ? 'settings.user_restore' : 'settings.user_suspend')}
                   />
                 </div>
               </li>

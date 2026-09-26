@@ -469,6 +469,7 @@ export const api = {
           role: 'owner' | 'member'
           createdAt: number
           lastSeenAt: number
+          disabledAt: number | null
           isConfiguredOwner: boolean
         }>
       }>('/api/admin/users'),
@@ -489,6 +490,12 @@ export const api = {
       resetPassword: (userId: string) =>
         request<{ ok: true; password: string }>(`/api/admin/users/${userId}/password`, {
           method: 'POST',
+        }),
+      /** Suspends or restores an account. Suspension keeps all data but blocks sign-in. */
+      setDisabled: (userId: string, disabled: boolean) =>
+        request<{ ok: true; disabled: boolean }>(`/api/admin/users/${userId}/status`, {
+          method: 'PATCH',
+          body: { disabled },
         }),
     },
   },

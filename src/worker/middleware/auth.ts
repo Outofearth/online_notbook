@@ -46,6 +46,7 @@ interface SessionUserRow extends UserRow {
   session_id: string
   expires_at: number
   last_seen_at: number
+  disabled_at: number | null
 }
 
 export const loadSession = createMiddleware<AppBindings>(async (c, next) => {
@@ -60,7 +61,7 @@ export const loadSession = createMiddleware<AppBindings>(async (c, next) => {
     if (!isSessionToken(token) || seenTokens.has(token)) continue
     seenTokens.add(token)
     const row = await c.env.DB.prepare(
-      `SELECT ${USER_COLUMNS_ALIASED}, u.last_seen_at, s.id AS session_id, s.expires_at
+      `SELECT ${USER_COLUMNS_ALIASED}, u.last_seen_at, u.disabled_at, s.id AS session_id, s.expires_at
          FROM sessions s LEFT JOIN users u ON u.id = s.user_id
         WHERE s.id = ?1 AND s.expires_at > ?2`,
     )
@@ -68,7 +69,9 @@ export const loadSession = createMiddleware<AppBindings>(async (c, next) => {
       .first<SessionUserRow>()
 
     if (row?.session_id) {
-      if (!row.id) {
+      if (!row.id || row.disabled_at !== null) {
+        // A suspended account keeps all of its data but must lose access immediately,
+        // so the presented session is dropped instead of honoured.
         await destroySession(c.env.DB, token)
         continue
       } else {

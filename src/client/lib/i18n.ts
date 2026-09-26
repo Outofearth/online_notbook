@@ -36,6 +36,7 @@ const apiCodeMessages: Record<string, MessageKey> = {
     two_factor_not_enabled: 'api.error.two_factor_not_enabled',
     two_factor_setup_expired: 'api.error.two_factor_setup_expired',
     two_factor_unavailable: 'api.error.two_factor_unavailable',
+    account_disabled: 'api.error.account_disabled',
 };
 let englishMessageKeys = new Map<string, MessageKey>();
 let locale: AppLocale = detectInitialLocale();
