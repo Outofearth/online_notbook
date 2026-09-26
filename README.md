@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="./README.md">English</a> ·
+  <a href="./README.en.md">English</a> ·
   <a href="./CONTRIBUTING.md">参与开发</a> ·
   <a href="./LICENSE">LGPL-3.0-only</a> ·
   <a href="https://inkstone-demo.pages.dev/">在线体验</a>
@@ -59,7 +59,7 @@ Inkstone 是运行在 Cloudflare Workers 上的浏览器笔记本。笔记始终
 4. 使用 R2 时，构建命令填 `npm run build`，部署命令填 `npm run deploy`
    - 如果你打算用 KV 模式，把部署命令改成 `npm run deploy:kv`
 5. 等部署完成后，打开生成的 Workers 域名
-6. （推荐）前往 **Settings → Variables and Secrets**，按下方「环境变量」章节覆盖 `ADMINISTRATOR` / `ADMINPASSWORD` 后再允许他人注册。
+6. （推荐）前往 **Settings → Variables and Secrets → Secrets**，设置 `ADMINISTRATOR` / `ADMINPASSWORD` 两个加密 Secret，然后关闭开放注册，改由你在用户管理里建号。详见下方「环境变量」章节。
 
 现有数据库会通过带版本号、可重复安全执行的迁移自动升级。自托管实例更新前仍建议保留一份最新备份；发现新的稳定版本时，只有站长会收到专门的更新提醒，不会打扰普通成员。
 
@@ -70,22 +70,34 @@ Inkstone 是运行在 Cloudflare Workers 上的浏览器笔记本。笔记始终
 | 变量 | 类型 | 必填 | 默认值 | 用途 |
 | --- | --- | --- | --- | --- |
 | `APP_NAME` | Variable | 否 | `Inkstone` | 前端 UI 与 meta 标签显示的站点名 |
-| **`ADMINISTRATOR`** | Variable | 否 | `admin` | 首次启动（`users` 表为空）时自动 seed 的 owner 账号用户名。已有账号或数据库已初始化后即被忽略。 |
-| **`ADMINPASSWORD`** | **Secret** | 否 | `admin123456` | 首次启动时自动 seed 的 owner 账号密码。**生产环境务必覆盖默认值** — 设置为 Secret，不要写进 Variable。使用 scrypt（`N=16384, r=8, p=5`）哈希，绝不以明文形式存储。 |
+| **`ADMINISTRATOR`** | **Secret** | 否 | *(无)* | 站长账号的用户名。与 `ADMINPASSWORD` 成对使用，决定哪个账号受配置托管。 |
+| **`ADMINPASSWORD`** | **Secret** | 否 | *(无)* | 站长账号的密码。**它就是权威密码**：改这个值会在下次冷启动时覆盖数据库里的密码哈希，并把该账号从所有设备登出。使用 scrypt（`N=16384, r=8, p=5`）哈希，绝不以明文形式存储。 |
 | `PUBLIC_URL` | Variable | 否 | *(无)* | 可选的公开域名，用于备份和公开分享生成绝对链接 |
 
-### 首次启动自动创建 owner 账号（ADMINISTRATOR + ADMINPASSWORD）
+> **两个都必须设置为 Secret**，不要写进 `wrangler.toml` 的 `[vars]`。原因见下方「站长账号由 Cloudflare 配置托管」。
 
-当两个变量**都被设置**且 `users` 表为空时，Worker 会自动创建一个 `owner` 账号。这个过程**仅执行一次**：seed 完成后会往 `app_meta` 写入标记（`system:admin_seeded = 1`），后续重启都跳过 — 即便后来清空过 users 表。密码弱于常规注册规则（≥ 8 位）或用户名非法（3-32 位、只能小写字母/数字/_/-）时 seed 也会跳过。
+### 站长账号由 Cloudflare 配置托管（ADMINISTRATOR + ADMINPASSWORD）
 
-**Cloudflare 生产环境**的推荐操作：
-1. Worker → **Settings → Variables and Secrets**
-2. 新增 **`ADMINISTRATOR`** 为普通 **Variable**，填入你选定的用户名
-3. 新增 **`ADMINPASSWORD`** 为 **Secret**（🔒），填入强密码
-4. 保存，下次部署或首次启动即自动创建
-5. 立刻登录，在 **Settings → 账户 → 登录安全** 里改成另一个强密码
+这两个变量**不是一次性 seed**，而是持续生效的配置来源。每次 Worker 冷启动（每个 isolate 一次，不是每个请求）都会做一次对账：
 
-> **安全提示**：`admin123456` 只是 `wrangler.toml` 里的兜底默认值，**互联网暴露的部署上绝不能留这个默认值**。务必在 Cloudflare Dashboard 里把 ADMINPASSWORD 设置为 Secret（Secret 永远不会进入 `wrangler.toml`、构建日志或前端代码）。
+| 情况 | 行为 |
+| --- | --- |
+| 账号存在，密码一致且是 owner | 什么都不做 |
+| 账号存在，密码**不一致** | 用新密码覆盖哈希，**并撤销该账号全部会话**（否则旧登录仍然有效） |
+| 账号存在，但角色不是 owner | 恢复为 owner，避免「配置说是站长、实际没有权限」 |
+| 账号不存在，且 `users` 表为空 | 创建为 owner（首次引导） |
+| 账号不存在，但实例已有其他用户 | **只记录告警并跳过**，不会创建 —— 防止 `ADMINISTRATOR` 拼错时静默多出一个站长 |
+
+**用户名不会被重命名**：改了 `ADMINISTRATOR` 不会改动已有账号；若指向一个不存在、而实例又非空的名字，只会告警跳过。
+
+**推荐操作（Cloudflare 生产环境）**：
+1. Worker → **Settings → Variables and Secrets** → **Secrets**
+2. 新增 **`ADMINISTRATOR`**（🔒），填入你选定的用户名
+3. 新增 **`ADMINPASSWORD`**（🔒），填入强密码（≥ 8 位）
+4. 保存后访问一次站点，对账即生效
+5. 想随时换密码，直接改 `ADMINPASSWORD` 即可，无需清库或删账号
+
+> **安全提示**：改了 `ADMINPASSWORD` 就等于改站长密码，请确保你自己记得新值；否则会把自己锁在外面。另外，能修改 Cloudflare Secret 的人本来就等于能接管站长账号 —— 这是把凭据放在部署配置里的固有代价，请保护好你的 Cloudflare 账号。
 
 ## 客户端加密备份导出
 
@@ -110,12 +122,31 @@ Inkstone 是运行在 Cloudflare Workers 上的浏览器笔记本。笔记始终
 | 操作 | 入口 | 安全约束 |
 | --- | --- | --- |
 | **查看列表** | 面板加载时自动拉取 | 仅 owner 可见该面板 |
+| **新建成员** | 面板右上角「新建用户」 | 只需填用户名，系统生成**只显示一次**的随机密码；服务端只保存哈希，关闭弹窗后无法再次查看。新账号自动是 member。 |
+| **重置密码** | 成员行上的 🔑 按钮 → 确认 | 生成新的随机密码并**立即撤销该成员的全部会话**（否则旧登录仍然有效）。不能对自己使用 —— 自己的密码请走上方「登录安全」区域。 |
+| **停用 / 恢复** | 成员行末的 🚫 / ↺ 按钮 → 确认 | 停用后该账号**保留全部笔记和附件**，但立即退出登录且无法再次登录；恢复后可用原密码继续登录。不能停用自己，也不能停用最后一个可用的 owner。 |
 | **提升为 owner** | 成员行上的 ⬆ 按钮 | 不能提升/降级自己 |
 | **降级为成员** | owner 行上的 ⬇ 按钮 | **最后一个 owner 不能被降级**（系统必须至少保留一个 owner） |
 | **删除成员** | 行末 🗑️ 按钮 → 确认 | 不能删除 owner、不能删除自己。该成员名下所有笔记、文件夹、标签、附件、版本、会话、TOTP、OAuth 授权和备份**都会被永久清除**。 |
-| **开启/关闭注册** | **Settings → 账户 → 访问控制 → 允许注册** | 仅 owner 可操作、需输入当前密码。开启后，访客登录页会出现注册入口，新账号自动是 **member**（不是 owner）。 |
+| **开启/关闭注册** | **Settings → 账户 → 访问控制 → 允许注册** | 仅 owner 可操作、需输入当前密码。开启后，访客登录页会出现注册入口，新账号自动是 **member**（不是 owner）。关闭后，账号只能由站长在用户管理里创建。 |
 
 所有变更服务端都有保护，前端 UI 只是额外的便利层。站长身份完全由 D1 `users.role = 'owner'` 字段决定，不存在额外的 `is_owner` 标志。
+
+### 受配置托管的站长账号
+
+由 `ADMINISTRATOR` 指定的那个账号在整个用户管理界面里是**只读**的：删除、降级、重置密码、停用全部禁用，并标注「由部署配置管理」。原因是它的状态由 Cloudflare 配置对账决定，从界面改也会在下次冷启动被还原。要调整它，请改 Cloudflare 的 Secret。
+
+## 路线图（待实现）
+
+以下是明确尚未实现、但已在规划中的能力：
+
+| 计划 | 说明 | 主要难点 |
+| --- | --- | --- |
+| **PDF 导入** | 把 PDF 转成 Markdown 笔记，与现有的 `.md/.txt/.docx/.epub/.html` 导入并列 | `pdf.js` 只能提取纯文本，拿不到标题层级、表格和列表结构，导入结果需要接受一定程度的降级 |
+| **AI 多轮对话** | 目前的 AI 问答是单轮 RAG；计划加入追问与上下文延续 | 需要为会话历史引入存储（KV 或 Durable Objects），并处理历史裁剪与配额 |
+| **笔记内嵌图片自动上传** | 从 `.docx` / `.epub` 解析出的图片直接存入 R2 并改写链接 | 需要在导入流程里接上附件上传与 `import_mappings` 去重，涉及跨端较大的数据流改造 |
+| **修改用户名** | 允许站长修改成员的登录名 | 需要处理唯一性冲突、旧用户名遗留入口，以及与受配置托管账号的保护规则冲突 |
+| **批量操作** | 用户列表支持多选批量停用/删除 | 依赖停用能力先行落地（已完成），再补多选交互与原子批处理 |
 
 ## 导出与备份
 

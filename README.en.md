@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="./README_ZH.md">中文</a> ·
+  <a href="./README.md">中文</a> ·
   <a href="./CONTRIBUTING.md">Contributing</a> ·
   <a href="./LICENSE">LGPL-3.0-only</a> ·
   <a href="https://inkstone-demo.pages.dev/">Demo</a>
@@ -57,22 +57,34 @@ The following variables can be set in `wrangler.toml` under `[vars]`, or overrid
 | Variable | Type | Required | Default | Purpose |
 | --- | --- | --- | --- | --- |
 | `APP_NAME` | Variable | No | `Inkstone` | Display name shown in the app UI and meta tags |
-| **`ADMINISTRATOR`** | Variable | No | `admin` | Auto-seeded owner account username on first startup (users table empty). Ignored once an owner exists or the database is already initialized. |
-| **`ADMINPASSWORD`** | **Secret** | No | `admin123456` | Auto-seeded owner account password on first startup. **Always override the default in production** — set it as a Secret, not a plain Variable. Uses scrypt (`N=16384, r=8, p=5`) hashing, never stored in plaintext. |
+| **`ADMINISTRATOR`** | **Secret** | No | *(none)* | Username of the owner account. Used together with `ADMINPASSWORD` to decide which account is governed by the deployment configuration. |
+| **`ADMINPASSWORD`** | **Secret** | No | *(none)* | Password of the owner account. **This is the authoritative password**: changing it replaces the stored hash on the next cold start and signs that account out everywhere. Uses scrypt (`N=16384, r=8, p=5`) hashing, never stored in plaintext. |
 | `PUBLIC_URL` | Variable | No | *(none)* | Optional public origin used for absolute links in backups and public sharing |
 
-### First-run owner seeding (ADMINISTRATOR + ADMINPASSWORD)
+> **Both must be set as Secrets**, never as plain `[vars]` in `wrangler.toml`. See below for why.
 
-If **both** variables are set **and** the `users` table is empty, the Worker auto-creates one `owner` account with the configured username and password. This happens exactly **once**: after seeding, a marker is written to `app_meta` (`system:admin_seeded = 1`) and subsequent restarts skip the step — even if you later truncate the users table. The seed also skips if the password is weaker than the normal registration rules (`≥ 8 characters`) or if the username is invalid (`3-32 chars, lowercase letters / digits / underscore / hyphen`).
+### The owner account is governed by the Cloudflare configuration (ADMINISTRATOR + ADMINPASSWORD)
+
+These variables are **not a one-off seed** — they are an ongoing source of truth. Every Worker cold start (once per isolate, not per request) reconciles the account against them:
+
+| Situation | Behaviour |
+| --- | --- |
+| Account exists, password matches, role is owner | Nothing happens |
+| Account exists, password **differs** | The stored hash is replaced **and every session for that account is revoked** — otherwise the old sign-in would still work |
+| Account exists but the role is not owner | The role is restored to owner, so the configuration and the actual permission cannot drift apart |
+| Account does not exist and the `users` table is empty | Created as owner (first-run bootstrap) |
+| Account does not exist but the instance already has users | **Warns and skips** — a typo in `ADMINISTRATOR` cannot silently create a second owner |
+
+**The username is never renamed.** Changing `ADMINISTRATOR` will not rename an existing account; if it points at a name that does not exist on a non-empty instance, it only logs a warning.
 
 For **production deployments** on Cloudflare:
-1. Go to the Worker → **Settings → Variables and Secrets**.
-2. Add **`ADMINISTRATOR`** as a regular **Variable** with your chosen username.
-3. Add **`ADMINPASSWORD`** as a **Secret** (🔒) with a strong password.
-4. Save. The next deployment (or first boot) will create the account automatically.
-5. Log in immediately and change the password in **Settings → Account → Sign-in Security**.
+1. Go to the Worker → **Settings → Variables and Secrets → Secrets**.
+2. Add **`ADMINISTRATOR`** (🔒) with your chosen username.
+3. Add **`ADMINPASSWORD`** (🔒) with a strong password (≥ 8 characters).
+4. Visit the site once — the reconciliation runs and takes effect.
+5. To rotate the password later, just change `ADMINPASSWORD`. No need to clear the database or delete the account.
 
-> **Security note**: `admin123456` is only a fallback default baked into `wrangler.toml`. Never leave it in place on an internet-facing deployment — **always set ADMINPASSWORD as a Secret in the Cloudflare Dashboard** (secrets are never exposed via `wrangler.toml`, build logs, or client-side code).
+> **Security note**: changing `ADMINPASSWORD` changes the owner password, so make sure you remember the new value or you will lock yourself out. Note also that anyone able to edit your Cloudflare secrets can already take over the owner account — that is the inherent cost of holding the credential in the deployment configuration, so protect your Cloudflare account.
 
 ## Client-side encrypted backup export
 
@@ -97,12 +109,31 @@ Owners can manage all member accounts from **Settings → Account → Access Con
 | Action | How | Guardrails |
 | --- | --- | --- |
 | **List users** | Opens automatically when the panel loads | Only owners see the panel |
+| **Create member** | "New user" at the top of the panel | Only a username is required. A random password is generated and shown **exactly once** — only its hash is stored, so it cannot be recovered after the dialog closes. New accounts are members. |
+| **Reset password** | Click the 🔑 button on a row → confirm | Generates a new random password and **revokes every session of that member** (otherwise the old sign-in would still work). Not available for yourself — use the Sign-in Security section above for your own password. |
+| **Suspend / Restore** | Click the 🚫 / ↺ button at the end of a row → confirm | A suspended account **keeps every note and attachment** but is signed out immediately and cannot sign in until restored. You cannot suspend yourself, and you cannot suspend the last usable owner. |
 | **Promote → owner** | Click the ⬆ button on a member row | You cannot promote or demote yourself |
 | **Demote → member** | Click the ⬇ button on an owner row | **Last owner cannot be demoted** (the system always keeps at least one owner) |
 | **Delete member** | Click the 🗑️ button → confirm | Cannot delete owners, cannot delete yourself. All notes, folders, tags, attachments, versions, sessions, TOTP, OAuth grants and backups owned by that member are **permanently removed**. |
-| **Open/Close registration** | **Settings → Account → Access Control → Allow Registration** | Owner-only, requires current password. When open, new visitors get a registration link and join as **members** (not owners). |
+| **Open/Close registration** | **Settings → Account → Access Control → Allow Registration** | Owner-only, requires current password. When open, new visitors get a registration link and join as **members** (not owners). When closed, accounts can only be created from user management. |
 
 All changes are protected server-side even if the UI guard is bypassed. The owner identity is determined solely by the `role = 'owner'` column in D1; there is no separate `is_owner` flag.
+
+### The account governed by the deployment configuration
+
+The account named by `ADMINISTRATOR` is **read-only** throughout the user management UI: delete, demote, reset password and suspend are all disabled, and the row is labelled "Managed by configuration". Its state is decided by the Cloudflare reconciliation, so a change made in the UI would simply be reverted on the next cold start. To change it, edit the Cloudflare secrets.
+
+## Roadmap (not implemented yet)
+
+The following capabilities are explicitly planned but not built:
+
+| Plan | Description | Main challenge |
+| --- | --- | --- |
+| **PDF import** | Convert PDFs into Markdown notes alongside the existing `.md/.txt/.docx/.epub/.html` importers | `pdf.js` only exposes plain text, so heading levels, tables and list structure are lost and the result has to accept some degradation |
+| **Multi-turn AI chat** | The AI Q&A is currently single-turn RAG; the plan is to support follow-up questions | Needs storage for conversation history (KV or Durable Objects), plus history trimming and quota handling |
+| **Automatic upload of embedded images** | Store images extracted from `.docx` / `.epub` in R2 and rewrite their links | Requires wiring the attachment upload and `import_mappings` deduplication into the import flow, which is a fairly wide cross-layer change |
+| **Rename usernames** | Let owners change a member's login name | Needs unique-constraint handling, a strategy for the old username, and reconciliation with the configuration-managed account guardrails |
+| **Bulk actions** | Multi-select in the user list for bulk suspend/delete | Depends on the suspend capability first (already shipped), then adds selection UI and atomic batching |
 
 ## Deployment
 
