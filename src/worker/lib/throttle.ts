@@ -1,6 +1,8 @@
 
 
 
+import { ApiError } from './errors'
+
 const DEFAULT_FREE_FAILS = 5
 const WINDOW_MS = 60 * 60 * 1000
 
@@ -89,6 +91,26 @@ export async function consumeAttemptBudget(
   )
   await db.batch(statements)
   await assertNotLocked(db, targets.map((target) => target.key))
+}
+
+/**
+ * Consumes one unit of an attempt budget and converts a throttle rejection into
+ * an HTTP 429 response, so every costly endpoint reports rate limiting the same way.
+ */
+export async function enforceAttemptBudget(
+  db: D1Database,
+  inputs: readonly AttemptBudgetTarget[],
+): Promise<void> {
+  try {
+    await consumeAttemptBudget(db, inputs)
+  } catch (err) {
+    if (err instanceof ThrottleError) {
+      throw new ApiError(429, 'too_many_attempts', `Too many attempts. Try again in ${err.retryAfterSec} seconds`, {
+        retryAfter: err.retryAfterSec,
+      })
+    }
+    throw err
+  }
 }
 
 export async function recordLoginFailure(

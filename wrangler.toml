@@ -59,15 +59,16 @@ crons = ["0 * * * *", "15,45 * * * *"]
 
 [vars]
 APP_NAME = "Inkstone"
-# Owner account seeded on first boot — see src/worker/db/schema.ts → seedConfiguredAdmin.
-# The username is not sensitive, so it belongs here as a plain variable rather than a
-# Secret. A config-based deploy replaces the Worker's plain variables wholesale, so a
-# Dashboard-only plain variable would silently disappear on the next deploy; keeping it
-# in this file makes it survive.
-ADMINISTRATOR = "admin"
-# NOTE: ADMINPASSWORD MUST be set as an encrypted Secret, never as a plain-text var.
-# Use `npx wrangler secret put ADMINPASSWORD` or the Cloudflare Dashboard →
+# The owner account is defined entirely by Cloudflare secrets, which are the source
+# of truth: on every cold start the Worker reconciles the account against them
+# (see src/worker/db/schema.ts → syncConfiguredOwner). Set BOTH with
+# `npx wrangler secret put <name>` or the Cloudflare Dashboard →
 # Workers → zhink → Settings → Variables and Secrets → Secrets.
+#   ADMINISTRATOR  username of the owner account (created on an empty instance,
+#                  otherwise it must already exist)
+#   ADMINPASSWORD  password for that account; rotating it replaces the stored hash
+#                  and signs the account out of every device
+# Never declare either one here as a plain-text var.
 
 [observability]
 enabled = true

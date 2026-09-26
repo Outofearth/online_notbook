@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { Camera, KeyRound, LogOut, RefreshCw, ShieldCheck, Trash2, UserRound } from 'lucide-react'
+import { Camera, Check, Copy, KeyRound, LogOut, Plus, RefreshCw, ShieldCheck, Trash2, UserRound } from 'lucide-react'
 import { PROFILE_NAME_MAX_LENGTH } from '@shared/avatar'
 import { LIMITS } from '@shared/constants'
 import { Avatar, Badge, Button } from '../../components/primitives'
 import { Input, SettingRow, Switch } from '../../components/form'
-import { confirm } from '../../components/overlay'
+import { Modal, confirm } from '../../components/overlay'
 import { api, ApiError } from '../../lib/api'
-import { t } from '../../lib/i18n'
+import { t, useLocale } from '../../lib/i18n'
 import { useSession } from '../../store/session'
 import { useUi } from '../../store/ui'
 import { AvatarPicker } from './AvatarPicker'
@@ -473,16 +473,25 @@ interface AdminUserRow {
   role: 'owner' | 'member'
   createdAt: number
   lastSeenAt: number
+  isConfiguredOwner: boolean
 }
 
 /** Admin user management panel (owner visibility only) */
 function UserManagementSection() {
   const toast = useUi((state) => state.toast)
+  const locale = useLocale()
   const currentUserId = useSession((state) => state.user?.id ?? '')
   const [users, setUsers] = useState<AdminUserRow[] | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [newUsername, setNewUsername] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [copied, setCopied] = useState(false)
+  // Generated credentials are returned once, so they are held in memory only long
+  // enough for the operator to copy them, then dropped together with the dialog.
+  const [revealed, setRevealed] = useState<{ username: string; password: string } | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -500,6 +509,70 @@ function UserManagementSection() {
   useEffect(() => {
     void load()
   }, [])
+
+  const closeReveal = () => {
+    setRevealed(null)
+    setCopied(false)
+  }
+
+  const onCreate = async () => {
+    const username = newUsername.trim().toLowerCase()
+    if (!username || creating) return
+    setCreating(true)
+    try {
+      const result = await api.admin.users.create(username, locale)
+      setCreateOpen(false)
+      setNewUsername('')
+      setCopied(false)
+      setRevealed({ username, password: result.password })
+      toast({ title: t('settings.user_created'), tone: 'success' })
+      await load()
+    } catch (err) {
+      toast({
+        title: t('settings.user_create_failed'),
+        description: err instanceof Error ? err.message : String(err),
+        tone: 'danger',
+      })
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  const onResetPassword = async (target: AdminUserRow) => {
+    if (target.id === currentUserId) return
+    const confirmed = await confirm({
+      title: t('settings.user_reset_password_confirm_title'),
+      description: t('settings.user_reset_password_confirm_description', { username: target.username }),
+      confirmLabel: t('settings.user_reset_password'),
+    })
+    if (!confirmed) return
+    setBusyId(target.id)
+    try {
+      const result = await api.admin.users.resetPassword(target.id)
+      setCopied(false)
+      setRevealed({ username: target.username, password: result.password })
+      toast({ title: t('settings.user_password_reset'), tone: 'success' })
+    } catch (err) {
+      toast({
+        title: t('settings.user_password_reset_failed'),
+        description: err instanceof Error ? err.message : String(err),
+        tone: 'danger',
+      })
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const onCopyPassword = async () => {
+    if (!revealed) return
+    try {
+      await navigator.clipboard.writeText(revealed.password)
+      setCopied(true)
+      toast({ title: t('common.copied'), tone: 'success' })
+    } catch {
+      toast({ title: t('settings.user_password_copy_failed'), tone: 'danger' })
+    }
+  }
 
   const onRemove = async (target: AdminUserRow) => {
     if (target.id === currentUserId) return
@@ -565,18 +638,23 @@ function UserManagementSection() {
 
   return (
     <div className="rounded-[var(--r-lg)] border border-[var(--border-subtle)] bg-[var(--bg-base)]">
-      <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-4 py-2.5">
+      <div className="flex items-center justify-between gap-3 border-b border-[var(--border-subtle)] px-4 py-2.5">
         <p className="text-[11.5px] leading-relaxed text-[var(--text-tertiary)]">
           {t('settings.user_management_description')}
         </p>
-        <Button
-          size="sm"
-          variant="ghost"
-          icon={<RefreshCw size={12} className={loading ? 'animate-[ink-spin_.7s_linear_infinite]' : ''} />}
-          onClick={() => void load()}
-          disabled={loading}
-          aria-label={t('app.reload')}
-        />
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Button size="sm" icon={<Plus size={12} />} onClick={() => setCreateOpen(true)}>
+            {t('settings.user_management_new_user')}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={<RefreshCw size={12} className={loading ? 'animate-[ink-spin_.7s_linear_infinite]' : ''} />}
+            onClick={() => void load()}
+            disabled={loading}
+            aria-label={t('app.reload')}
+          />
+        </div>
       </div>
 
       {loading && !users && (
@@ -596,8 +674,13 @@ function UserManagementSection() {
           {users.map((u) => {
             const isSelf = u.id === currentUserId
             const isBusy = busyId === u.id
-            const canDelete = u.role !== 'owner' && !isSelf
-            const canToggleRole = !isSelf
+            // The account named by the ADMINISTRATOR secret is managed through the
+            // deployment config, so every UI action on it is disabled.
+            const isManaged = u.isConfiguredOwner
+            const canDelete = u.role !== 'owner' && !isSelf && !isManaged
+            const canToggleRole = !isSelf && !isManaged
+            const canResetPassword = !isSelf && !isManaged
+            const protectedHint = isManaged ? t('settings.user_managed_by_configuration') : undefined
             return (
               <li key={u.id} className="flex items-center gap-3 px-4 py-2.5">
                 <Avatar
@@ -618,6 +701,9 @@ function UserManagementSection() {
                     {isSelf && (
                       <Badge tone="success">{t('settings.current_user')}</Badge>
                     )}
+                    {isManaged && (
+                      <Badge tone="neutral">{t('settings.user_managed_by_configuration')}</Badge>
+                    )}
                   </div>
                   <div className="mt-0.5 text-[11px] text-[var(--text-quaternary)]">
                     @{u.username}
@@ -632,12 +718,24 @@ function UserManagementSection() {
                     disabled={!canToggleRole || isBusy}
                     loading={isBusy}
                     onClick={() => void onToggleRole(u)}
-                    title={canToggleRole
+                    title={protectedHint ?? (canToggleRole
                       ? (u.role === 'owner' ? t('settings.demote_to_member') : t('settings.promote_to_owner'))
-                      : t('settings.cannot_change_own_role')}
+                      : t('settings.cannot_change_own_role'))}
                   >
                     {u.role === 'owner' ? t('settings.demote') : t('settings.promote')}
                   </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={<KeyRound size={12} />}
+                    disabled={!canResetPassword || isBusy}
+                    loading={isBusy}
+                    onClick={() => void onResetPassword(u)}
+                    title={protectedHint ?? (canResetPassword
+                      ? t('settings.user_reset_password')
+                      : t('settings.cannot_reset_own_password'))}
+                    aria-label={t('settings.user_reset_password')}
+                  />
                   <Button
                     size="sm"
                     variant="ghost"
@@ -645,7 +743,7 @@ function UserManagementSection() {
                     disabled={!canDelete || isBusy}
                     loading={isBusy}
                     onClick={() => void onRemove(u)}
-                    title={canDelete ? t('settings.delete_user') : t('settings.owner_cannot_be_deleted')}
+                    title={protectedHint ?? (canDelete ? t('settings.delete_user') : t('settings.owner_cannot_be_deleted'))}
                     className={canDelete ? 'text-[var(--danger)] hover:text-[var(--danger)]' : ''}
                   />
                 </div>
@@ -654,6 +752,67 @@ function UserManagementSection() {
           })}
         </ul>
       )}
+
+      <Modal
+        open={createOpen}
+        onClose={() => { if (!creating) { setCreateOpen(false); setNewUsername('') } }}
+        title={t('settings.user_create_title')}
+        description={t('settings.user_create_description')}
+        width={420}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => { setCreateOpen(false); setNewUsername('') }} disabled={creating}>
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant="primary"
+              loading={creating}
+              disabled={!newUsername.trim() || creating}
+              onClick={() => void onCreate()}
+            >
+              {t('settings.user_create_confirm')}
+            </Button>
+          </>
+        }
+      >
+        <label className="block">
+          <span className="mb-1.5 block text-[12px] font-medium text-[var(--text-secondary)]">
+            {t('settings.user_create_username_label')}
+          </span>
+          <Input
+            value={newUsername}
+            onChange={(event) => setNewUsername(event.target.value)}
+            placeholder={t('settings.user_create_username_placeholder')}
+            aria-label={t('settings.user_create_username_label')}
+            autoFocus
+            onKeyDown={(event) => { if (event.key === 'Enter') void onCreate() }}
+          />
+        </label>
+      </Modal>
+
+      <Modal
+        open={revealed !== null}
+        onClose={closeReveal}
+        title={t('settings.user_password_reveal_title', { username: revealed?.username ?? '' })}
+        description={t('settings.user_password_reveal_description')}
+        width={420}
+        footer={<Button variant="primary" onClick={closeReveal}>{t('settings.user_password_done')}</Button>}
+      >
+        <div className="flex items-center gap-2 rounded-[var(--r-md)] border border-[var(--border-subtle)] bg-[var(--bg-inset)] px-3 py-2">
+          <code className="min-w-0 flex-1 truncate font-mono text-[13px] text-[var(--text-primary)]">
+            {revealed?.password ?? ''}
+          </code>
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={copied ? <Check size={12} className="text-[var(--success)]" /> : <Copy size={12} />}
+            onClick={() => void onCopyPassword()}
+            aria-label={t('settings.user_password_copy')}
+          >
+            {t('settings.user_password_copy')}
+          </Button>
+        </div>
+      </Modal>
     </div>
   )
 }

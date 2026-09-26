@@ -1,8 +1,7 @@
 import { Hono, type Context } from 'hono'
 import { getCookie } from 'hono/cookie'
-import { DEFAULT_SETTINGS } from '@shared/constants'
 import { isBitmapAvatarDataUrl, PROFILE_NAME_MAX_LENGTH } from '@shared/avatar'
-import type { AppLocale, SessionInfo, UserSettings } from '@shared/types'
+import type { SessionInfo } from '@shared/types'
 import type { AppBindings, Env } from '../env'
 import { drainAttachmentCleanup } from '../attachments/cleanup'
 import { attachmentCleanupTarget } from '../attachments/keys'
@@ -14,6 +13,7 @@ import {
   type StoredAvatarObject,
 } from '../avatars/storage'
 import { seedWorkspace } from '../db/seed'
+import { normalizeLocale, settingsFor } from '../lib/account'
 import { ApiError } from '../lib/errors'
 import { newId } from '../lib/id'
 import { getAllowRegistration } from '../lib/instance-settings'
@@ -37,6 +37,7 @@ import {
   assertNotLocked,
   clearLoginFailures,
   consumeAttemptBudget,
+  enforceAttemptBudget,
   recordLoginFailure,
   type ThrottleTarget,
   ThrottleError,
@@ -364,26 +365,6 @@ authRoutes.post('/logout', async (c) => {
   return c.json({ ok: true })
 })
 
-async function enforceAttemptBudget(
-  db: D1Database,
-  targets: Parameters<typeof consumeAttemptBudget>[1],
-): Promise<void> {
-  try {
-    await consumeAttemptBudget(db, targets)
-  } catch (err) {
-    if (err instanceof ThrottleError) {
-      throw new ApiError(429, 'too_many_attempts', `Too many attempts. Try again in ${err.retryAfterSec} seconds`, {
-        retryAfter: err.retryAfterSec,
-      })
-    }
-    throw err
-  }
-}
-
-function normalizeLocale(value: unknown): AppLocale {
-  return typeof value === 'string' && value.toLowerCase().startsWith('en') ? 'en-US' : 'zh-CN'
-}
-
 export function normalizeDisplayName(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const normalized = value.trim().replace(/\s+/gu, ' ')
@@ -395,15 +376,4 @@ export function normalizeDisplayName(value: unknown): string | null {
     return null
   }
   return normalized
-}
-
-function settingsFor(locale: AppLocale): UserSettings {
-  return {
-    ...DEFAULT_SETTINGS,
-    appearance: { ...DEFAULT_SETTINGS.appearance, language: locale },
-    editor: { ...DEFAULT_SETTINGS.editor },
-    preview: { ...DEFAULT_SETTINGS.preview },
-    backup: { ...DEFAULT_SETTINGS.backup },
-    sync: { ...DEFAULT_SETTINGS.sync },
-  }
 }

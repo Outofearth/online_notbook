@@ -1,8 +1,18 @@
 import { Hono } from 'hono'
-import type { AppBindings } from '../env'
+import type { AppBindings, Env } from '../env'
 import { ApiError } from '../lib/errors'
 import { JSON_BODY_LIMITS, readJson } from '../lib/request'
 import { requireAuth } from '../middleware/auth'
+import { normalizeLocale, settingsFor } from '../lib/account'
+import { newId } from '../lib/id'
+import {
+  generatePassword,
+  hashPassword,
+  normalizeUsername,
+  USERNAME_PATTERN,
+} from '../lib/password'
+import { enforceAttemptBudget } from '../lib/throttle'
+import { seedWorkspace } from '../db/seed'
 import {
   attachmentCleanupTarget,
   attachmentObjectKey,
@@ -23,11 +33,29 @@ function requireOwner(c: { get: (key: 'user') => { role: 'owner' | 'member'; id:
 }
 
 /**
+ * Username of the owner declared in the deployment configuration, if any. That
+ * account is governed by the Cloudflare secrets, so it must not be deletable or
+ * demotable from the UI — the next cold start would only undo the change.
+ */
+function configuredOwnerUsername(env: Env): string | null {
+  const raw = env.ADMINISTRATOR?.trim()
+  return raw ? normalizeUsername(raw) : null
+}
+
+/** Rate limit for the privileged write endpoints, keyed by the acting owner */
+function enforceAdminBudget(env: Env, actingUserId: string, action: string): Promise<void> {
+  return enforceAttemptBudget(env.DB, [
+    { key: `admin-${action}:${actingUserId}`, maxAttempts: 30, windowMs: 10 * 60 * 1000 },
+  ])
+}
+
+/**
  * GET /api/admin/users
  * Returns the list of all users (password hashes excluded)
  */
 adminRoutes.get('/users', async (c) => {
   requireOwner(c)
+  const configuredOwner = configuredOwnerUsername(c.env)
   const result = await c.env.DB.prepare(
     `SELECT id, username, login, name, avatar_url, role, created_at, last_seen_at
        FROM users
@@ -43,6 +71,9 @@ adminRoutes.get('/users', async (c) => {
       role: row.role,
       createdAt: row.created_at,
       lastSeenAt: row.last_seen_at,
+      // The account governed by the ADMINISTRATOR secret cannot be managed from the
+      // UI, so the client needs to know which row that is.
+      isConfiguredOwner: row.username === configuredOwner,
     })),
   })
 })
@@ -79,11 +110,16 @@ adminRoutes.patch('/users/:id/role', async (c) => {
 
   // Read the target user
   const target = await c.env.DB.prepare(
-    `SELECT id, role FROM users WHERE id = ?1`,
-  ).bind(targetId).first<{ id: string; role: 'owner' | 'member' }>()
+    `SELECT id, username, role FROM users WHERE id = ?1`,
+  ).bind(targetId).first<{ id: string; username: string; role: 'owner' | 'member' }>()
   if (!target) throw ApiError.notFound('User not found')
 
-  // If downgrading owner → member, confirm at least one owner remains in the system
+  // The configured owner is governed by the deployment secrets, so the UI must not be
+  // able to demote it — the next cold start would only restore the role.
+  if (body.role === 'member' && target.username === configuredOwnerUsername(c.env)) {
+    throw ApiError.badRequest('The account named by ADMINISTRATOR must stay an owner')
+  }
+
   if (target.role === 'owner' && body.role === 'member') {
     const ownerCount = await c.env.DB.prepare(
       `SELECT COUNT(*) AS n FROM users WHERE role = 'owner'`,
@@ -118,6 +154,12 @@ adminRoutes.delete('/users/:id', async (c) => {
     `SELECT id, username, role FROM users WHERE id = ?1`,
   ).bind(targetId).first<{ id: string; username: string; role: 'owner' | 'member' }>()
   if (!target) throw ApiError.notFound('User not found')
+
+  // Checked before the role rule so the configured owner stays protected even if it
+  // was demoted to member beforehand.
+  if (target.username === configuredOwnerUsername(c.env)) {
+    throw ApiError.badRequest('The account named by ADMINISTRATOR cannot be deleted')
+  }
   if (target.role === 'owner') {
     throw ApiError.badRequest('Owner accounts cannot be deleted')
   }
@@ -125,6 +167,75 @@ adminRoutes.delete('/users/:id', async (c) => {
   await deleteUserAndCascade(c.env.DB, targetId, target.username)
 
   return c.json({ ok: true })
+})
+
+/**
+ * POST /api/admin/users
+ * Provisions a member account and returns its generated password exactly once.
+ * Only the hash is stored, so this response is the only chance to read it.
+ */
+adminRoutes.post('/users', async (c) => {
+  requireOwner(c)
+  await enforceAdminBudget(c.env, c.get('user').id, 'create-user')
+
+  const body = await readJson<{ username?: string; locale?: string }>(c, JSON_BODY_LIMITS.small)
+  const rawUsername = typeof body.username === 'string' ? body.username.slice(0, 128) : ''
+  const username = normalizeUsername(rawUsername)
+  if (!USERNAME_PATTERN.test(username)) {
+    throw ApiError.badRequest('Username must contain 3-32 lowercase letters, numbers, underscores, or hyphens')
+  }
+
+  const locale = normalizeLocale(body.locale ?? c.req.header('Accept-Language'))
+  const password = generatePassword()
+  const id = newId()
+  const now = Date.now()
+
+  const result = await c.env.DB.prepare(
+    `INSERT INTO users
+       (id, username, password_hash, login, name, avatar_url, role, settings, created_at, last_seen_at)
+     VALUES (?1, ?2, ?3, ?2, ?2, '', 'member', ?4, ?5, ?5)
+     ON CONFLICT(username) DO NOTHING`,
+  ).bind(id, username, await hashPassword(password), JSON.stringify(settingsFor(locale)), now).run()
+
+  if (!result.meta.changes) throw ApiError.conflict('That username is already in use')
+
+  await seedWorkspace(c.env, id, locale).catch((err) => {
+    console.warn('[inkstone] Failed to initialize sample content for the new account:', err)
+  })
+
+  console.info(`[inkstone] Owner provisioned the account "${username}".`)
+  return c.json({ ok: true, password }, 201)
+})
+
+/**
+ * POST /api/admin/users/:id/password
+ * Resets another account's password and returns the new value exactly once.
+ * Existing sessions are revoked so the previous credential cannot keep a browser signed in.
+ */
+adminRoutes.post('/users/:id/password', async (c) => {
+  requireOwner(c)
+  const targetId = c.req.param('id')!
+
+  if (targetId === c.get('user').id) {
+    throw ApiError.badRequest('Use the account settings page to change your own password')
+  }
+
+  await enforceAdminBudget(c.env, c.get('user').id, 'reset-password')
+
+  const target = await c.env.DB.prepare(
+    `SELECT id, username FROM users WHERE id = ?1`,
+  ).bind(targetId).first<{ id: string; username: string }>()
+  if (!target) throw ApiError.notFound('User not found')
+
+  const password = generatePassword()
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE users SET password_hash = ?1 WHERE id = ?2`)
+      .bind(await hashPassword(password), targetId),
+    c.env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?1`).bind(targetId),
+  ])
+
+  console.info(`[inkstone] Owner reset the password for "${target.username}".`)
+  return c.json({ ok: true, password })
 })
 
 /**

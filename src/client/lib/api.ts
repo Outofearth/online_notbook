@@ -469,6 +469,7 @@ export const api = {
           role: 'owner' | 'member'
           createdAt: number
           lastSeenAt: number
+          isConfiguredOwner: boolean
         }>
       }>('/api/admin/users'),
       remove: (userId: string) =>
@@ -477,6 +478,17 @@ export const api = {
         request<{ ok: true; role: 'owner' | 'member' }>(`/api/admin/users/${userId}/role`, {
           method: 'PATCH',
           body: { role },
+        }),
+      /** Provisions an account; the generated password is returned only in this response. */
+      create: (username: string, locale?: string) =>
+        request<{ ok: true; password: string }>('/api/admin/users', {
+          method: 'POST',
+          body: { username, locale },
+        }),
+      /** Resets another account's password; the new value is returned only in this response. */
+      resetPassword: (userId: string) =>
+        request<{ ok: true; password: string }>(`/api/admin/users/${userId}/password`, {
+          method: 'POST',
         }),
     },
   },

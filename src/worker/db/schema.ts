@@ -1,7 +1,7 @@
 /** Defines the idempotent final D1 schema initialized by every Worker isolate. */
 import type { DatabaseState, Env } from '../env'
 import { getMeta, setMeta } from './metadata'
-import { hashPassword, normalizeUsername, validateNewPassword } from '../lib/password'
+import { hashPassword, normalizeUsername, USERNAME_PATTERN, validateNewPassword, verifyPassword } from '../lib/password'
 import { newId } from '../lib/id'
 
 
@@ -654,8 +654,8 @@ export function initializeDatabase(env: Env): Promise<DatabaseState> {
 
   const pending = createSchema(env.DB)
     .then(async (state) => {
-      await seedConfiguredAdmin(env).catch((error) => {
-        console.warn('[inkstone] Failed to seed configured admin account; manual registration still works:',
+      await syncConfiguredOwner(env).catch((error) => {
+        console.warn('[inkstone] Failed to sync the configured owner account; manual registration still works:',
           error instanceof Error ? error.message : error)
       })
       return state
@@ -766,56 +766,83 @@ async function readStoredDatabaseState(db: D1Database): Promise<DatabaseState | 
 }
 
 
-/** meta key used to mark that admin has already been seeded via env vars, so we don't retry every boot */
-const ADMIN_SEEDED_KEY = 'system:admin_seeded'
-
 /**
- * On first launch, if env vars ADMINISTRATOR / ADMINPASSWORD are set and no account
- * with that username exists yet, auto-create an Owner account. Failure only warns and
- * does not block Worker startup.
+ * Keeps the owner account declared by the environment in sync with the deployed
+ * configuration, so the Cloudflare secrets stay the source of truth: when
+ * ADMINPASSWORD changes, the next cold start rotates the stored hash.
+ *
+ * The username is deliberately never renamed. A configured username that has no
+ * matching account while other users already exist only logs a warning, so a typo
+ * cannot silently create a second owner. Failure only warns and never blocks startup.
  */
-async function seedConfiguredAdmin(env: Env): Promise<void> {
+async function syncConfiguredOwner(env: Env): Promise<void> {
   const rawUsername = env.ADMINISTRATOR?.trim()
   const rawPassword = env.ADMINPASSWORD
 
-  // Both variables must be configured together for seeding to proceed
+  // Both variables must be configured together for syncing to proceed
   if (!rawUsername || !rawPassword) return
 
   const username = normalizeUsername(rawUsername)
-
-  // Idempotency marker: skip if already seeded (regardless of whether users table was later cleared manually)
-  if (await getMeta(env.DB, ADMIN_SEEDED_KEY) === '1') return
-
-  // Only seed if no admin account exists yet (honor cases where user may already have other accounts)
-  // This fixes the issue where manually deleting admin + reseed flag but leaving other
-  // member accounts would prevent reseeding — previously we required the ENTIRE users table empty.
-  const adminRow = await env.DB.prepare(`SELECT id FROM users WHERE username = ?1 LIMIT 1`)
-    .bind(username).first<{ id: string }>()
-  if (adminRow?.id) return
+  if (!USERNAME_PATTERN.test(username)) {
+    console.warn(`[inkstone] skip owner sync (ADMINISTRATOR "${rawUsername}" is invalid)`)
+    return
+  }
 
   // Basic security validation
   const passwordError = validateNewPassword(rawPassword)
   if (passwordError) {
-    console.warn(`[inkstone] skip admin seed (ADMINPASSWORD too weak): ${passwordError}`)
-    return
-  }
-  if (!username || username.length < 3 || username.length > 32) {
-    console.warn(`[inkstone] skip admin seed (ADMINISTRATOR "${rawUsername}" is invalid)`)
+    console.warn(`[inkstone] skip owner sync (ADMINPASSWORD too weak): ${passwordError}`)
     return
   }
 
-  const id = newId()
-  const now = Date.now()
-  const passwordHash = await hashPassword(rawPassword)
+  const existing = await env.DB.prepare(
+    `SELECT id, password_hash, role FROM users WHERE username = ?1 LIMIT 1`,
+  ).bind(username).first<{ id: string; password_hash: string; role: 'owner' | 'member' }>()
 
-  await env.DB.prepare(
-    `INSERT INTO users
-       (id, username, password_hash, login, name, avatar_url, role, settings, created_at, last_seen_at)
-     VALUES (?1, ?2, ?3, ?2, ?2, '', 'owner', '{}', ?4, ?4)`,
-  ).bind(id, username, passwordHash, now).run()
+  if (!existing) {
+    // Bootstrap only on an empty instance; otherwise the operator almost certainly
+    // mistyped ADMINISTRATOR rather than intending to add another owner.
+    const anyUser = await env.DB.prepare(`SELECT 1 AS n FROM users LIMIT 1`).first<{ n: number }>()
+    if (anyUser?.n) {
+      console.warn(
+        `[inkstone] skip owner sync: no account named "${username}" and this instance already has users. ` +
+          'Point ADMINISTRATOR at an existing account, or clear the users table to bootstrap a new one.',
+      )
+      return
+    }
 
-  await setMeta(env.DB, ADMIN_SEEDED_KEY, '1')
-  console.info(`[inkstone] Auto-seeded owner account "${username}" from environment variables.`)
+    await env.DB.prepare(
+      `INSERT INTO users
+         (id, username, password_hash, login, name, avatar_url, role, settings, created_at, last_seen_at)
+       VALUES (?1, ?2, ?3, ?2, ?2, '', 'owner', '{}', ?4, ?4)`,
+    ).bind(newId(), username, await hashPassword(rawPassword), Date.now()).run()
+
+    console.info(`[inkstone] Created the owner account "${username}" from environment variables.`)
+    return
+  }
+
+  const passwordMatches = await verifyPassword(rawPassword, existing.password_hash)
+  if (passwordMatches && existing.role === 'owner') return
+
+  const statements: D1PreparedStatement[] = []
+  if (!passwordMatches) {
+    // Rotating the password must also drop existing sessions, otherwise a browser
+    // signed in with the previous credential keeps its access.
+    statements.push(
+      env.DB.prepare(`UPDATE users SET password_hash = ?1 WHERE id = ?2`)
+        .bind(await hashPassword(rawPassword), existing.id),
+      env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?1`).bind(existing.id),
+    )
+  }
+  if (existing.role !== 'owner') {
+    statements.push(env.DB.prepare(`UPDATE users SET role = 'owner' WHERE id = ?1`).bind(existing.id))
+  }
+  await env.DB.batch(statements)
+
+  console.info(
+    `[inkstone] Synced the configured owner "${username}"` +
+      `${passwordMatches ? '' : ' (password rotated)'}${existing.role === 'owner' ? '' : ' (role restored to owner)'}.`,
+  )
 }
 
 function schemaFingerprint(): string {

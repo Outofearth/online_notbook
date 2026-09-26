@@ -33,6 +33,30 @@ export function validateNewPassword(password: unknown): string | null {
   return null
 }
 
+// Characters that are easy to confuse when a password is read off a screen and
+// retyped (l/I/1, O/0) are deliberately excluded.
+const GENERATED_PASSWORD_ALPHABET = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+const GENERATED_PASSWORD_LENGTH = 16
+
+/**
+ * Generates a high-entropy password for accounts provisioned by an administrator.
+ * Uses rejection sampling so every character is uniformly distributed, and the
+ * plaintext is handed back to the caller exactly once — only its hash is stored.
+ */
+export function generatePassword(length: number = GENERATED_PASSWORD_LENGTH): string {
+  const alphabet = GENERATED_PASSWORD_ALPHABET
+  const limit = Math.floor(256 / alphabet.length) * alphabet.length
+  let password = ''
+  while (password.length < length) {
+    for (const byte of crypto.getRandomValues(new Uint8Array(length))) {
+      if (byte >= limit) continue
+      password += alphabet[byte % alphabet.length]
+      if (password.length === length) break
+    }
+  }
+  return password
+}
+
 export async function hashPassword(password: string): Promise<string> {
   if (password.length > PASSWORD_MAX_LENGTH) throw new Error('password_too_long')
   const salt = crypto.getRandomValues(new Uint8Array(16))
