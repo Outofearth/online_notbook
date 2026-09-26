@@ -110,12 +110,14 @@ const config: UserConfigFnPromise = async ({ mode, command }) => ({
       checks: {
         pluginTimings: false,
       },
-      // Rolldown's tree-shaking is too aggressive with React conditional JSX —
-      // it drops code inside `{!isMobile && (<>...</>)}` blocks even when they
-      // reference dynamically-resolved functions. Disable to preserve Phase 1/2 features.
-      treeshake: false,
+      // Tree-shaking and minification are both on. They were previously disabled
+      // while chasing a report that Rolldown dropped React conditional JSX blocks
+      // (`{!isMobile && (<>...</>)}`); the entry points those blocks render are now
+      // asserted after every build (t() key literals inside the blocks must survive),
+      // and the browser check covers the rendered result.
+      treeshake: true,
       output: {
-        minify: false,
+        minify: true,
         codeSplitting: {
           groups: [
             {

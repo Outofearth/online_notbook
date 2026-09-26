@@ -8,7 +8,9 @@ const usedKeys = new Set();
 const forbiddenCjk = /[\p{Script=Han}\u3000-\u303f\uff00-\uffef]/u;
 const visibleAttributes = new Set(['alt', 'aria-label', 'description', 'hint', 'label', 'placeholder', 'title']);
 const allowedHanFragments = new Map([
-    [path.resolve('README.md'), ['<a href="./README_ZH.md">\u4e2d\u6587</a>']],
+    // README.md is the Chinese document; README.en.md is the English one and is the
+    // file that must stay Han-free apart from its language switch.
+    [path.resolve('README.en.md'), ['<a href="./README.md">\u4e2d\u6587</a>']],
     // The OAuth consent page is a self-contained HTML document with its own
     // language switch (cookie-based); it does not use the React i18n layer.
     [path.resolve('src/worker/routes/mcp-authorize.ts'), [
@@ -82,7 +84,7 @@ for (const file of englishOnlyPaths.flatMap((target) => fs.existsSync(target) ? 
 for (const file of [
     'index.html',
     'package.json',
-    'README.md',
+    'README.en.md',
     'CONTRIBUTING.md',
     'SECURITY.md',
     'vite.config.ts',

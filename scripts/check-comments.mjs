@@ -6,6 +6,16 @@ const allowed = new Map([
   ["scripts/check-i18n.mjs", [
     "// The OAuth consent page is a self-contained HTML document with its own",
     "// language switch (cookie-based); it does not use the React i18n layer.",
+    "// README.md is the Chinese document; README.en.md is the English one and is the",
+    "// file that must stay Han-free apart from its language switch.",
+  ]],
+  ["vite.config.ts", [
+    "// Keep optional preview renderers and their language modules behind dynamic-import boundaries.",
+    "// Tree-shaking and minification are both on. They were previously disabled",
+    "// while chasing a report that Rolldown dropped React conditional JSX blocks",
+    "// (`{!isMobile && (<>...</>)}`); the entry points those blocks render are now",
+    "// asserted after every build (t() key literals inside the blocks must survive),",
+    "// and the browser check covers the rendered result.",
   ]],
   ["src/client/features/graph/GraphPanel.tsx", [
     "// Private browsing or a locked-down browser can reject local preferences.",
@@ -15,7 +25,7 @@ const allowed = new Map([
     "// enforces the same minimum); short codes are trivially brute-forced.",
   ]],
   ["src/client/lib/i18n.ts", [
-    "/** Provides typed runtime localization with complete English and Simplified Chinese resources. */",
+    "/** Provides typed runtime localization with on-demand locale loading. */",
   ]],
   ["src/client/lib/markdown/renderer.ts", [
     "/** Builds the sanitized Markdown rendering pipeline and its Inkstone-specific syntax extensions. */",
