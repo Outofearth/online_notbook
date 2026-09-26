@@ -475,12 +475,17 @@ function markdownExampleBodies(text: string): string[] {
           fenceLen = marker.length
           collecting = []
         }
-      } else if (marker[0]! === fenceChar && marker.length >= fenceLen && !(fence[2] ?? '').trim()) {
+        continue
+      }
+      if (marker[0]! === fenceChar && marker.length >= fenceLen && !(fence[2] ?? '').trim()) {
         // A closing fence may only be followed by spaces or tabs.
         bodies.push(collecting.join('\n'))
         collecting = null
+        continue
       }
-      continue
+      // Anything else belongs to the example: a nested ordinary code fence, or a
+      // same-character marker carrying an info string. Keep the line so the recursive
+      // pass can still strip whatever that fence hides.
     }
     if (collecting !== null) collecting.push(line)
   }
